@@ -24,7 +24,7 @@ def run_audit(
     end_date: str = Query("today")
 ):
     try:
-        results = run_ga4_audit(property_numeric_id=property_id, start_date=start_date, end_date=end_date)
+        results = run_ga4_audit(property_id, start_date=start_date, end_date=end_date)
         return {"success": True, "data": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
