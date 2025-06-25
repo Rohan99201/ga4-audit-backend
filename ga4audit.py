@@ -7,17 +7,20 @@ from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metr
 import pandas as pd
 import re
 import os
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
 
-# ✅ Load credentials from service_account.json
-SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
-creds = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES
-)
+# ✅ Load credentials from JSON stored in environment variable
+SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
+if not SERVICE_ACCOUNT_JSON:
+    raise Exception("SERVICE_ACCOUNT_JSON environment variable is not set")
+
+info = json.loads(SERVICE_ACCOUNT_JSON)
+creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
 
 def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today"):
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
