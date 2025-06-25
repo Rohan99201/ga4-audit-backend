@@ -4,11 +4,26 @@ from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metric
 import pandas as pd
 import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
 
 def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today"):
-    flow = InstalledAppFlow.from_client_secrets_file('credentials.json', SCOPES)
+    flow = InstalledAppFlow.from_client_config(
+        {
+            "installed": {
+                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
+                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
+                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+                "token_uri": "https://oauth2.googleapis.com/token",
+                "redirect_uris": ["http://localhost"]
+            }
+        },
+        SCOPES
+    )
     creds = flow.run_local_server(port=0)
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
     data_client = BetaAnalyticsDataClient(credentials=creds)
@@ -31,7 +46,7 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
 
     streams = admin_client.list_data_streams(parent=property_id)
     for stream in streams:
-        stream_type = "Web" if stream.web_stream_data else "Android" if stream.android_app_stream_data else "iOS" if stream.ios_app_stream_data else "Unknown"
+        stream_type = "Web" if hasattr(stream, "web_stream_data") and stream.web_stream_data else "Android" if hasattr(stream, "android_app_stream_data") and stream.android_app_stream_data else "iOS" if hasattr(stream, "ios_app_stream_data") and stream.ios_app_stream_data else "Unknown"
         stream_name = stream.display_name or "Unnamed Stream"
         log("Streams", f"{stream_name} ({stream_type})", stream.name)
 
@@ -70,7 +85,7 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
             response = data_client.run_report(request=pii_req)
             for row in response.rows:
                 val = row.dimension_values[0].value
-                if re.search(r"gmail\.com|email=|phone=|pno=|\+91\d{10}|\d{10}", val):
+                if re.search(r"gmail\\.com|email=|phone=|pno=|\\+91\\d{10}|\\d{10}", val):
                     log("PII", f"Potential PII in {dim}", val)
                     pii_found = True
         except Exception as e:

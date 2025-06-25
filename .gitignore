@@ -1,0 +1,11 @@
+# Python virtual environment
+ga4audit-env/
+__pycache__/
+*.pyc
+
+# Secrets
+.env
+credentials.json
+
+# VSCode or IDE files
+.vscode/
