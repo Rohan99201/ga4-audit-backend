@@ -1,4 +1,6 @@
-from google_auth_oauthlib.flow import InstalledAppFlow
+# ✅ UPDATED CODE: Uses Service Account instead of InstalledAppFlow
+
+from google.oauth2 import service_account
 from google.analytics.admin import AnalyticsAdminServiceClient
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metric
@@ -11,20 +13,13 @@ load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
 
+# ✅ Load credentials from service_account.json
+SERVICE_ACCOUNT_FILE = os.getenv("SERVICE_ACCOUNT_FILE", "service_account.json")
+creds = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES
+)
+
 def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today"):
-    flow = InstalledAppFlow.from_client_config(
-        {
-            "installed": {
-                "client_id": os.getenv("GOOGLE_CLIENT_ID"),
-                "client_secret": os.getenv("GOOGLE_CLIENT_SECRET"),
-                "auth_uri": "https://accounts.google.com/o/oauth2/auth",
-                "token_uri": "https://oauth2.googleapis.com/token",
-                "redirect_uris": ["http://localhost"]
-            }
-        },
-        SCOPES
-    )
-    creds = flow.run_local_server(port=0)
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
     data_client = BetaAnalyticsDataClient(credentials=creds)
 

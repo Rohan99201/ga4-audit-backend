@@ -9,3 +9,4 @@ credentials.json
 
 # VSCode or IDE files
 .vscode/
+service_account.json
