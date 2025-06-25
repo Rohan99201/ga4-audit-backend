@@ -1,0 +1,11 @@
+services:
+  - type: web
+    name: ga4-audit-backend
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port 10000
+    envVars:
+      - key: 829270404086-cjacve1u91jdvk6pn97v579em16q2qhc.apps.googleusercontent.com
+        sync: false
+      - key: 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
+        sync: false
