@@ -145,11 +145,12 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         log("Transactions", "Item-level check failed", str(e))
 
     return {
-        "settings": [row for row in audit_rows if row['Category'] == "Settings"],
-        "limits": [row for row in audit_rows if row['Category'] == "Limits"],
-        "events": [row for row in audit_rows if row['Category'] == "Event Inventory"],
-        "pii": [row for row in audit_rows if row['Category'] == "PII"],
-        "transactions": [row for row in audit_rows if row['Category'] == "Transactions"],
-        "transaction_mapping": tx_detail_rows,
-        "item_errors": item_error_rows
+        "Property Details": [row for row in audit_rows if row['Category'] == "Settings"],
+        "Streams Configuration": [row for row in audit_rows if row['Category'] == "Streams"],
+        "GA4 Property Limits": [row for row in audit_rows if row['Category'] == "Limits"],
+        "GA4 Events": [row for row in audit_rows if row['Category'] == "Event Inventory"],
+        "PII Check": [row for row in audit_rows if row['Category'] == "PII"],
+        "Transactions": [row for row in audit_rows if row['Category'] == "Transactions"],
+        "Transaction Mapping": tx_detail_rows,
+        "Errors in Item Data": item_error_rows
     }
