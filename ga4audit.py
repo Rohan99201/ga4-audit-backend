@@ -1,4 +1,4 @@
-# ✅ UPDATED CODE: Uses Service Account instead of InstalledAppFlow
+# ✅ UPDATED CODE: Detect Duplicate Transactions, Fix Currency Error, Handle ItemName Null
 
 from google.oauth2 import service_account
 from google.analytics.admin import AnalyticsAdminServiceClient
@@ -9,13 +9,12 @@ import re
 import os
 import json
 from dotenv import load_dotenv
-from collections import Counter
+from collections import defaultdict, Counter
 
 load_dotenv()
 
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
 
-# ✅ Load credentials from JSON stored in environment variable
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 if not SERVICE_ACCOUNT_JSON:
     raise Exception("SERVICE_ACCOUNT_JSON environment variable is not set")
@@ -31,9 +30,9 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     audit_rows = []
     tx_detail_rows = []
     item_error_rows = []
+    duplicate_tx_rows = []
+    purchase_log = []
     pii_found = False
-    duplicate_rows = []
-    purchase_log_rows = []
 
     def log(category, check, result):
         audit_rows.append({'Category': category, 'Check': check, 'Result': result})
@@ -68,10 +67,8 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         limit=200
     )
     response = data_client.run_report(request=event_inventory_req)
-    event_list = []
     for row in response.rows:
         event = row.dimension_values[0].value
-        event_list.append(event)
         log("Event Inventory", event, row.metric_values[0].value)
 
     for dim in ["pagePath", "pageLocation"]:
@@ -95,39 +92,34 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     if not pii_found:
         log("PII", "Scan Result", "✅ No potential PII found in page paths or URLs.")
 
-    transaction_ids = []
+    transaction_ids = set()
+    transaction_counts = Counter()
     transaction_report = RunReportRequest(
         property=property_id,
         dimensions=[Dimension(name="transactionId")],
-        metrics=[Metric(name="purchaseRevenue")],
+        metrics=[Metric(name="transactions"), Metric(name="purchaseRevenue")],
         date_ranges=[{"start_date": start_date, "end_date": end_date}]
     )
     response = data_client.run_report(request=transaction_report)
     for row in response.rows:
         tid = row.dimension_values[0].value
-        revenue = row.metric_values[0].value
+        tx_count = int(row.metric_values[0].value)
+        revenue = row.metric_values[1].value
         if tid:
-            transaction_ids.append(tid)
+            transaction_ids.add(tid)
+            transaction_counts[tid] = tx_count
             tx_detail_rows.append({"transactionId": tid, "revenue": revenue, "source": "Revenue Table"})
+            if tx_count > 1:
+                duplicate_tx_rows.append({"transactionId": tid, "count": tx_count})
         else:
             log("Transactions", "Missing transactionId", "Detected")
-
-    log("Transactions", "Total Unique transactionId", len(set(transaction_ids)))
-
-    # Detect Duplicates
-    duplicates = [tid for tid, count in Counter(transaction_ids).items() if count > 1]
-    if duplicates:
-        log("Transactions", "Duplicate Transaction IDs", f"❌ Found duplicates: {duplicates}")
-        for dup in duplicates:
-            duplicate_rows.append({"transactionId": dup, "occurrences": transaction_ids.count(dup)})
-    else:
-        log("Transactions", "Duplicate Transaction IDs", "✅ No duplicates found")
+    log("Transactions", "Total Unique transactionId", len(transaction_ids))
 
     item_transaction_ids = set()
     try:
         item_report = RunReportRequest(
             property=property_id,
-            dimensions=[Dimension(name="eventName"), Dimension(name="transactionId"), Dimension(name="itemId"), Dimension(name="itemName"), Dimension(name="currencyCode")],
+            dimensions=[Dimension(name="eventName"), Dimension(name="transactionId"), Dimension(name="itemId"), Dimension(name="itemName")],
             metrics=[Metric(name="itemRevenue")],
             date_ranges=[{"start_date": start_date, "end_date": end_date}],
             limit=1000
@@ -140,16 +132,16 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
             item_name = row.dimension_values[3].value
             revenue = row.metric_values[0].value
             if event_name == "purchase":
-                purchase_log_rows.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue})
+                purchase_log.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue})
                 if tid and tid != "(not set)":
                     item_transaction_ids.add(tid)
                     tx_detail_rows.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "source": "Item Table"})
-                    if item_name in ["(not set)", "", None] and float(revenue) > 0:
+                    if item_name in ["", "(not set)"] and float(revenue) > 0:
                         item_error_rows.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue})
                 else:
-                    log("Transactions", "Item missing valid transactionId", f"Item ID: {item_id} / Name: {item_name}")
-        missing_in_items = set(transaction_ids) - item_transaction_ids
-        missing_in_txns = item_transaction_ids - set(transaction_ids)
+                    item_error_rows.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue})
+        missing_in_items = transaction_ids - item_transaction_ids
+        missing_in_txns = item_transaction_ids - transaction_ids
         if not missing_in_items:
             log("Transactions", "With Revenue but Missing Items", "✅ All revenue transactions are linked to items.")
         else:
@@ -161,6 +153,9 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     except Exception as e:
         log("Transactions", "Item-level check failed", str(e))
 
+    duplicate_msg = "✅ No duplicates found" if not duplicate_tx_rows else duplicate_tx_rows
+    log("Transactions", "Duplicate Transaction IDs", duplicate_msg)
+
     return {
         "Property Details": [row for row in audit_rows if row['Category'] == "Settings"],
         "Streams Configuration": [row for row in audit_rows if row['Category'] == "Streams"],
@@ -169,7 +164,7 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         "PII Check": [row for row in audit_rows if row['Category'] == "PII"],
         "Transactions": [row for row in audit_rows if row['Category'] == "Transactions"],
         "Transaction Mapping": tx_detail_rows,
-        "Errors in Item Data": item_error_rows,
-        "Duplicate Transactions": duplicate_rows,
-        "Purchase Events Log": purchase_log_rows
+        "Transaction Where Item Data Missing": item_error_rows,
+        "Duplicate Transactions": duplicate_tx_rows,
+        "Purchase Events Log": purchase_log
     }
