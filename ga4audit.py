@@ -2,7 +2,7 @@
 
 from google.oauth2 import service_account
 from google.analytics.admin import AnalyticsAdminServiceClient
-from google.analytics.admin_v1beta.types import AcknowledgeUserDataCollectionRequest # Keep import for clarity, though not directly used in the call
+from google.analytics.admin_v1beta.types import AcknowledgeUserDataCollectionRequest
 from google.analytics.admin_v1beta.types import GetDataRetentionSettingsRequest, DataRetentionSettings # Import DataRetentionSettings for enum
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metric
@@ -48,10 +48,12 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     # ✅ Acknowledge user data collection
     acknowledgement_string = "I acknowledge that I have the necessary privacy disclosures and rights from my end users for the collection and processing of their data, including the association of such data with the visitation information Google Analytics collects from my site and/or app property."
     try:
-        # Corrected: Pass the parameters directly to the method
+        # Corrected: Pass an instance of AcknowledgeUserDataCollectionRequest as the 'request' argument
         admin_client.acknowledge_user_data_collection(
-            property=property_id,
-            acknowledgement=acknowledgement_string
+            request=AcknowledgeUserDataCollectionRequest(
+                property=property_id,
+                acknowledgement=acknowledgement_string
+            )
         )
         log("Settings", "User Data Collection Acknowledgment", "✅ Acknowledged successfully.")
     except Exception as e:
