@@ -50,7 +50,7 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         retention_settings = admin_client.get_data_retention_settings(
             GetDataRetentionSettingsRequest(name=f"properties/{property_numeric_id}/dataRetentionSettings")
         )
-        log("Settings", "Retention Period (Days)", retention_settings.event_data_retention)
+        log("Settings", "Retention Period (Days)", retention_settings.eventDataRetention)
     except Exception as e:
         log("Settings", "Retention Period (Days)", "Not available via API")
 
