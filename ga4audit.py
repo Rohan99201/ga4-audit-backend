@@ -47,8 +47,9 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
 
     # ✅ Retention settings
     try:
+        # Corrected: Pass the name string directly to the method
         retention_settings = admin_client.get_data_retention_settings(
-            GetDataRetentionSettingsRequest(name=f"properties/{property_numeric_id}/dataRetentionSettings")
+            name=f"properties/{property_numeric_id}/dataRetentionSettings"
         )
         # Corrected attribute name: event_data_retention (snake_case)
         # And formatting the enum value for better readability
