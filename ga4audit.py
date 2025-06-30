@@ -48,10 +48,11 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     # ✅ Acknowledge user data collection
     acknowledgement_string = "I acknowledge that I have the necessary privacy disclosures and rights from my end users for the collection and processing of their data, including the association of such data with the visitation information Google Analytics collects from my site and/or app property."
     try:
-        # Corrected: Pass property_id as the first positional argument, then the request object
+        # Corrected: Pass a single AcknowledgeUserDataCollectionRequest object as the 'request' argument,
+        # with both 'property' and 'acknowledgement' fields inside it.
         admin_client.acknowledge_user_data_collection(
-            property_id, # The resource name for the property as a positional argument
             request=AcknowledgeUserDataCollectionRequest(
+                property=property_id,
                 acknowledgement=acknowledgement_string
             )
         )
