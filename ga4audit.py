@@ -15,7 +15,8 @@ from collections import Counter
 
 load_dotenv()
 
-SCOPES = ['https://www.googleapis.com/auth/analytics.readonly']
+# ✅ UPDATED SCOPES to include analytics.edit for acknowledgeUserDataCollection
+SCOPES = ['https://www.googleapis.com/auth/analytics.readonly', 'https://www.googleapis.com/auth/analytics.edit']
 
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
 if not SERVICE_ACCOUNT_JSON:
@@ -43,29 +44,26 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     log("Settings", "Display Name", prop.display_name)
     log("Settings", "Time Zone", prop.time_zone)
     log("Settings", "Currency", prop.currency_code)
-    log("Settings", "Reporting Identity", "Not available via API")
+
+    # ✅ Acknowledge user data collection
+    acknowledgement_string = "I acknowledge that I have the necessary privacy disclosures and rights from my end users for the collection and processing of their data, including the association of such data with the visitation information Google Analytics collects from my site and/or app property."
+    try:
+        admin_client.acknowledge_user_data_collection(
+            AcknowledgeUserDataCollectionRequest(property=property_id, acknowledgement=acknowledgement_string)
+        )
+        log("Settings", "User Data Collection Acknowledgment", "✅ Acknowledged successfully.")
+    except Exception as e:
+        log("Settings", "User Data Collection Acknowledgment", f"❌ Failed to acknowledge: {e}")
 
     # ✅ Retention settings
     try:
-        # Corrected: Pass the name string directly to the method
         retention_settings = admin_client.get_data_retention_settings(
             name=f"properties/{property_numeric_id}/dataRetentionSettings"
         )
-        # Corrected attribute name: event_data_retention (snake_case)
-        # And formatting the enum value for better readability
         retention_period_str = retention_settings.event_data_retention.name.replace('_', ' ').title()
         log("Settings", "Retention Period", retention_period_str)
     except Exception as e:
-        # In a real application, you might log 'e' here for debugging
-        log("Settings", "Retention Period", f"Not available via API ({e})") # Include error for debugging
-
-    # ✅ Acknowledge user data collection (silent failure if not permitted)
-    try:
-        admin_client.acknowledge_user_data_collection(
-            AcknowledgeUserDataCollectionRequest(property=property_id, acknowledgement="I acknowledge")
-        )
-    except Exception:
-        pass # Silently fail if acknowledgment is not possible or already done
+        log("Settings", "Retention Period", f"Not available via API ({e})")
 
     # ✅ Streams
     streams = admin_client.list_data_streams(parent=property_id)
@@ -104,7 +102,7 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
                 if re.search(r"gmail\\.com|email=|phone=|pno=|\\+91\\d{10}|\\d{10}", val):
                     log("PII", f"Potential PII in {dim}", val)
                     pii_found = True
-        except Exception: # Catch specific exceptions if possible, or log 'e'
+        except Exception:
             continue
     if not pii_found:
         log("PII", "Scan Result", "✅ No potential PII found in page paths or URLs.")
