@@ -2,8 +2,7 @@
 
 from google.oauth2 import service_account
 from google.analytics.admin import AnalyticsAdminServiceClient
-from google.analytics.admin_v1beta.types import AcknowledgeUserDataCollectionRequest
-from google.analytics.admin_v1beta.types import GetDataRetentionSettingsRequest, DataRetentionSettings # Import DataRetentionSettings for enum
+from google.analytics.admin_v1beta.types import GetDataRetentionSettingsRequest, DataRetentionSettings
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metric
 import pandas as pd
@@ -12,10 +11,12 @@ import os
 import json
 from dotenv import load_dotenv
 from collections import Counter
+import requests # Import the requests library
+import google.auth.transport.requests # Import for refreshing credentials
 
 load_dotenv()
 
-# ✅ UPDATED SCOPES to include analytics.edit for acknowledgeUserDataCollection
+# SCOPES for both read-only and edit permissions
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly', 'https://www.googleapis.com/auth/analytics.edit']
 
 SERVICE_ACCOUNT_JSON = os.getenv("SERVICE_ACCOUNT_JSON")
@@ -24,6 +25,9 @@ if not SERVICE_ACCOUNT_JSON:
 
 info = json.loads(SERVICE_ACCOUNT_JSON)
 creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+# Base URL for Analytics Admin API
+API_BASE_URL = "https://analyticsadmin.googleapis.com/v1beta"
 
 def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today"):
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
@@ -45,19 +49,32 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     log("Settings", "Time Zone", prop.time_zone)
     log("Settings", "Currency", prop.currency_code)
 
-    # ✅ Acknowledge user data collection
+    # ✅ Acknowledge user data collection using direct HTTP POST
     acknowledgement_string = "I acknowledge that I have the necessary privacy disclosures and rights from my end users for the collection and processing of their data, including the association of such data with the visitation information Google Analytics collects from my site and/or app property."
     try:
-        # Corrected: Pass 'name' as a direct argument to the method,
-        # and the AcknowledgeUserDataCollectionRequest object (containing only 'acknowledgement')
-        # as the 'request' argument.
-        admin_client.acknowledge_user_data_collection(
-            name=property_id, # The resource name for the property
-            request=AcknowledgeUserDataCollectionRequest(
-                acknowledgement=acknowledgement_string
-            )
-        )
-        log("Settings", "User Data Collection Acknowledgment", "✅ Acknowledged successfully.")
+        # Ensure credentials are fresh before getting the token
+        if not creds.valid:
+            creds.refresh(google.auth.transport.requests.Request())
+
+        access_token = creds.token
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json"
+        }
+        # Construct the API URL for the acknowledgeUserDataCollection endpoint
+        api_url = f"{API_BASE_URL}/{property_id}:acknowledgeUserDataCollection"
+        request_body = {
+            "acknowledgement": acknowledgement_string
+        }
+
+        # Make the HTTP POST request
+        response = requests.post(api_url, headers=headers, data=json.dumps(request_body))
+
+        if response.status_code == 200:
+            log("Settings", "User Data Collection Acknowledgment", "✅ Acknowledged successfully.")
+        else:
+            log("Settings", "User Data Collection Acknowledgment",
+                f"❌ Failed to acknowledge: {response.status_code} - {response.text}")
     except Exception as e:
         log("Settings", "User Data Collection Acknowledgment", f"❌ Failed to acknowledge: {e}")
 
