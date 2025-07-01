@@ -2,6 +2,7 @@
 
 from google.oauth2 import service_account
 from google.analytics.admin import AnalyticsAdminServiceClient
+from google.analytics.admin_v1beta.types import AcknowledgeUserDataCollectionRequest
 from google.analytics.admin_v1beta.types import GetDataRetentionSettingsRequest, DataRetentionSettings
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metric
@@ -101,6 +102,37 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     log("Limits", "Key Events Used", f"{len(list(admin_client.list_conversion_events(parent=property_id)))} / 50")
     log("Limits", "Audiences Used", f"{len(list(admin_client.list_audiences(parent=property_id)))} / 100")
 
+    # ✅ Custom Dimension Details (New Section)
+    custom_dims = list(admin_client.list_custom_dimensions(parent=property_id))
+    if custom_dims:
+        for dim in custom_dims:
+            audit_rows.append({
+                'Category': 'Custom Dimension Details',
+                'Check': dim.display_name,
+                'Result': {
+                    'Parameter Name': dim.parameter_name,
+                    'Scope': dim.scope.name.replace('_', ' ').title()
+                }
+            })
+    else:
+        log("Custom Dimension Details", "No Custom Dimensions Found", "N/A")
+
+    # ✅ Key Event Details (New Section)
+    key_events = list(admin_client.list_conversion_events(parent=property_id))
+    if key_events:
+        for event in key_events:
+            audit_rows.append({
+                'Category': 'Key Event Details',
+                'Check': event.event_name,
+                'Result': {
+                    'Create Time': str(event.create_time.ToDatetime()),
+                    'Counting Method': event.counting_method.name.replace('_', ' ').title()
+                }
+            })
+    else:
+        log("Key Event Details", "No Key Events Found", "N/A")
+
+
     # ✅ Event Inventory
     inventory_req = RunReportRequest(
         property=property_id,
@@ -187,6 +219,8 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         "Property Details": [r for r in audit_rows if r['Category'] == "Settings"],
         "Streams Configuration": [r for r in audit_rows if r['Category'] == "Streams"],
         "GA4 Property Limits": [r for r in audit_rows if r['Category'] == "Limits"],
+        "Custom Dimension Details": [r for r in audit_rows if r['Category'] == "Custom Dimension Details"],
+        "Key Event Details": [r for r in audit_rows if r['Category'] == "Key Event Details"],
         "GA4 Events": [r for r in audit_rows if r['Category'] == "Event Inventory"],
         "PII Check": [r for r in audit_rows if r['Category'] == "PII"],
         "Transactions": [r for r in audit_rows if r['Category'] == "Transactions"],
