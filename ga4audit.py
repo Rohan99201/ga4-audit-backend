@@ -3,7 +3,7 @@
 from google.oauth2 import service_account
 from google.analytics.admin import AnalyticsAdminServiceClient
 from google.analytics.admin_v1beta.types import AcknowledgeUserDataCollectionRequest
-from google.analytics.admin_v1beta.types import GetDataRetentionSettingsRequest, DataRetentionSettings
+from google.analytics.admin_v1beta.types import GetDataRetentionSettingsRequest, DataRetentionSettings # Import DataRetentionSettings for enum
 from google.analytics.data_v1beta import BetaAnalyticsDataClient
 from google.analytics.data_v1beta.types import RunReportRequest, Dimension, Metric
 import pandas as pd
@@ -16,7 +16,8 @@ import requests # Import the requests library
 import google.auth.transport.requests # Import for refreshing credentials
 
 load_dotenv()
-
+# Base URL for Analytics Admin API
+API_BASE_URL = "https://analyticsadmin.googleapis.com/v1beta"
 # SCOPES for both read-only and edit permissions
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly', 'https://www.googleapis.com/auth/analytics.edit']
 
@@ -26,9 +27,6 @@ if not SERVICE_ACCOUNT_JSON:
 
 info = json.loads(SERVICE_ACCOUNT_JSON)
 creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
-
-# Base URL for Analytics Admin API
-API_BASE_URL = "https://analyticsadmin.googleapis.com/v1beta"
 
 def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today"):
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
@@ -124,8 +122,9 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
             audit_rows.append({
                 'Category': 'Key Event Details',
                 'Check': event.event_name,
+                # Corrected: Directly convert event.create_time to string
                 'Result': {
-                    'Create Time': str(event.create_time.ToDatetime()),
+                    'Create Time': str(event.create_time),
                     'Counting Method': event.counting_method.name.replace('_', ' ').title()
                 }
             })
