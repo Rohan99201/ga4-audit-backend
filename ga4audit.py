@@ -14,10 +14,10 @@ from dotenv import load_dotenv
 from collections import Counter
 import requests # Import the requests library
 import google.auth.transport.requests # Import for refreshing credentials
+import datetime # Import datetime module for date formatting
 
 load_dotenv()
-# Base URL for Analytics Admin API
-API_BASE_URL = "https://analyticsadmin.googleapis.com/v1beta"
+
 # SCOPES for both read-only and edit permissions
 SCOPES = ['https://www.googleapis.com/auth/analytics.readonly', 'https://www.googleapis.com/auth/analytics.edit']
 
@@ -27,6 +27,9 @@ if not SERVICE_ACCOUNT_JSON:
 
 info = json.loads(SERVICE_ACCOUNT_JSON)
 creds = service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+
+# Base URL for Analytics Admin API
+API_BASE_URL = "https://analyticsadmin.googleapis.com/v1beta"
 
 def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today"):
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
@@ -119,12 +122,18 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
     key_events = list(admin_client.list_conversion_events(parent=property_id))
     if key_events:
         for event in key_events:
+            # Format the create_time to show only the date (YYYY-MM-DD)
+            # The DatetimeWithNanoseconds object's string representation is ISO-like,
+            # but with a space instead of 'T'. Replace ' ' with 'T' for fromisoformat.
+            formatted_create_time = datetime.datetime.fromisoformat(
+                str(event.create_time).replace(' ', 'T', 1)
+            ).strftime('%Y-%m-%d')
+
             audit_rows.append({
                 'Category': 'Key Event Details',
                 'Check': event.event_name,
-                # Corrected: Directly convert event.create_time to string
                 'Result': {
-                    'Create Time': str(event.create_time),
+                    'Create Time': formatted_create_time,
                     'Counting Method': event.counting_method.name.replace('_', ' ').title()
                 }
             })
