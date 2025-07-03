@@ -186,15 +186,19 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         if tid:
             transaction_ids.add(tid)
             transaction_counts[tid] += count
-            tx_detail_rows.append({"transactionId": tid, "revenue": revenue, "source": "Revenue Table"})
+            purchase_log.append({"transactionId": tid, "revenue": revenue, "source": "Revenue Table"}) # Use purchase_log for all tx details
             if count > 1:
                 duplicate_tx_rows.append({"transactionId": tid, "count": count})
     log("Transactions", "Total Unique transactionId", len(transaction_ids))
     log("Transactions", "Duplicate Transaction Count", len(duplicate_tx_rows))
-    log("Transactions", "Duplicate Transaction IDs", duplicate_tx_rows or "✅ No duplicates found")
+    log("Transactions", "Duplicate Transaction IDs", duplicate_tx_rows if duplicate_tx_rows else "✅ No duplicates found")
+
 
     # ✅ Item-level check
     item_transaction_ids = set()
+    transactions_with_items_no_revenue_data = set() # To store transaction IDs with items but no revenue
+    revenue_with_missing_items_data = set() # To store transaction IDs with revenue but no items
+
     try:
         item_report = RunReportRequest(
             property=property_id,
@@ -207,21 +211,43 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
             tid = row.dimension_values[1].value
             item_id = row.dimension_values[2].value
             item_name = row.dimension_values[3].value
-            revenue = row.metric_values[0].value
+            revenue = float(row.metric_values[0].value) # Convert to float for comparison
+
             if event_name == "purchase":
-                tx_detail_rows.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue, "source": "Item Table"})
+                purchase_log.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue, "source": "Item Table"})
                 if tid:
                     item_transaction_ids.add(tid)
-                    if item_name in ["", "(not set)"] and float(revenue) > 0:
+                    if item_name in ["", "(not set)"] and revenue > 0:
                         item_error_rows.append({"transactionId": tid, "itemId": item_id, "itemName": item_name, "revenue": revenue})
+
+                    # Check for items with no revenue (if transaction revenue is 0 or missing for this tid)
+                    # This logic needs to be refined. The 'itemRevenue' metric itself can be 0.
+                    # The check is about overall transaction revenue vs. item presence.
+                    # We'll rely on the comparison below for this.
+
     except Exception as e:
         log("Transactions", "Item-level check failed", str(e))
 
-    # ✅ Compare mapping
-    missing_in_items = transaction_ids - item_transaction_ids
-    missing_in_txns = item_transaction_ids - transaction_ids
-    log("Transactions", "With Revenue but Missing Items", "✅ All revenue transactions are linked to items." if not missing_in_items else str(missing_in_items))
-    log("Transactions", "With Items but No Revenue", "✅ All item transactions have matching revenue data." if not missing_in_txns else str(missing_in_txns))
+    # ✅ Compare mapping for "With Revenue but Missing Items" and "With Items but No Revenue"
+    # Re-evaluate these based on the collected transaction_ids and item_transaction_ids
+    # from the reports.
+
+    # Transactions that have revenue but no item data (i.e., transactionId in revenue_set but not in item_set)
+    revenue_only_tids = transaction_ids - item_transaction_ids
+    if revenue_only_tids:
+        revenue_with_missing_items_data = list(revenue_only_tids) # Convert set to list for JSON
+        log("Transactions", "With Revenue but Missing Items", revenue_with_missing_items_data)
+    else:
+        log("Transactions", "With Revenue but Missing Items", "✅ All revenue transactions are linked to items.")
+
+    # Transactions that have item data but no revenue (i.e., transactionId in item_set but not in revenue_set)
+    items_only_tids = item_transaction_ids - transaction_ids
+    if items_only_tids:
+        transactions_with_items_no_revenue_data = list(items_only_tids) # Convert set to list for JSON
+        log("Transactions", "With Items but No Revenue", transactions_with_items_no_revenue_data)
+    else:
+        log("Transactions", "With Items but No Revenue", "✅ All item transactions have matching revenue data.")
+
 
     return {
         "Property Details": [r for r in audit_rows if r['Category'] == "Settings"],
@@ -232,7 +258,9 @@ def run_ga4_audit(property_numeric_id, start_date="30daysAgo", end_date="today")
         "GA4 Events": [r for r in audit_rows if r['Category'] == "Event Inventory"],
         "PII Check": [r for r in audit_rows if r['Category'] == "PII"],
         "Transactions": [r for r in audit_rows if r['Category'] == "Transactions"],
-        "Transaction Mapping": tx_detail_rows,
-        "Transaction Where Item Data Missing": item_error_rows,
-        "Duplicate Transactions": duplicate_tx_rows
+        "Transaction Mapping": tx_detail_rows, # This is not currently used for the new tables, but keeping for completeness
+        "Transaction Where Item Data Missing": item_error_rows, # This is for missing item_name/id within a purchase
+        "Duplicate Transactions": duplicate_tx_rows,
+        "Revenue Only Transactions": revenue_with_missing_items_data, # New key for frontend to use
+        "Items Only Transactions": transactions_with_items_no_revenue_data # New key for frontend to use
     }
