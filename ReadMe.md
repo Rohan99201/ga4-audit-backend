@@ -11,6 +11,8 @@ A complete **Google Analytics 4 Audit Tool** that automatically checks:
 * GA4 limits
 * Retention settings
 * Ecommerce validation
+* Unassigned Traffic
+* Landing Page (not set)
 
 Built using **Python + FastAPI + GA4 Admin & Data APIs**.
 
