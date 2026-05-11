@@ -1,13 +1,12 @@
 from fastapi import FastAPI, Query, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse, JSONResponse
-from starlette.middleware.sessions import SessionMiddleware
 from google.oauth2.credentials import Credentials
 from google.analytics.admin import AnalyticsAdminServiceClient
-# from googleapiclient.discovery import build
 import requests
 import os
 import json
+import base64
 from ga4audit import run_ga4_audit_with_creds
 
 app = FastAPI()
@@ -16,8 +15,7 @@ app = FastAPI()
 GOOGLE_CLIENT_ID     = os.getenv("GOOGLE_CLIENT_ID")
 GOOGLE_CLIENT_SECRET = os.getenv("GOOGLE_CLIENT_SECRET")
 REDIRECT_URI         = os.getenv("REDIRECT_URI", "https://ga4-audit-backend.onrender.com/auth/callback")
-FRONTEND_URL         = os.getenv("FRONTEND_URL", "https://your-frontend.onrender.com")
-SECRET_KEY           = os.getenv("SECRET_KEY", "change-this-to-a-random-secret")
+FRONTEND_URL         = os.getenv("FRONTEND_URL", "https://ga4-audit-frontend.vercel.app")
 
 GOOGLE_AUTH_URL  = "https://accounts.google.com/o/oauth2/v2/auth"
 GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token"
@@ -30,22 +28,34 @@ SCOPES = [
     "profile",
 ]
 
-# ── Middleware ─────────────────────────────────────────────────────────────
-app.add_middleware(SessionMiddleware, secret_key=SECRET_KEY, max_age=3600)
-
+# ── CORS ───────────────────────────────────────────────────────────────────
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[FRONTEND_URL, "http://localhost:5173"],
+    allow_origins=[
+        FRONTEND_URL,
+        "http://localhost:5173",
+        "http://localhost:5174",
+        "http://localhost:5175",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# ── Helper: build Credentials from session ─────────────────────────────────
+# ── Helper: decode token from request header ───────────────────────────────
 def get_user_credentials(request: Request) -> Credentials:
-    token_data = request.session.get("token_data")
-    if not token_data:
+    """
+    Frontend sends: Authorization: Bearer <base64-encoded-token-json>
+    """
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Not authenticated. Please log in.")
+    try:
+        token_json = base64.b64decode(auth_header[7:]).decode("utf-8")
+        token_data = json.loads(token_json)
+    except Exception:
+        raise HTTPException(status_code=401, detail="Invalid token format.")
+
     return Credentials(
         token=token_data["access_token"],
         refresh_token=token_data.get("refresh_token"),
@@ -64,7 +74,7 @@ def read_root():
 
 @app.get("/auth/google")
 def auth_google():
-    """Step 1 — redirect user to Google's OAuth consent screen."""
+    """Step 1 — redirect user to Google consent screen."""
     scope_str = " ".join(SCOPES)
     params = (
         f"?client_id={GOOGLE_CLIENT_ID}"
@@ -78,8 +88,12 @@ def auth_google():
 
 
 @app.get("/auth/callback")
-def auth_callback(request: Request, code: str = Query(...)):
-    """Step 2 — Google redirects back here with an auth code. Exchange it for tokens."""
+def auth_callback(code: str = Query(...)):
+    """
+    Step 2 — exchange code for tokens, then redirect to frontend
+    with the token data base64-encoded in the URL fragment (#).
+    Fragments never leave the browser so the token stays client-side only.
+    """
     token_response = requests.post(GOOGLE_TOKEN_URL, data={
         "code": code,
         "client_id": GOOGLE_CLIENT_ID,
@@ -89,37 +103,26 @@ def auth_callback(request: Request, code: str = Query(...)):
     })
 
     if token_response.status_code != 200:
-        raise HTTPException(status_code=400, detail=f"Token exchange failed: {token_response.text}")
+        return RedirectResponse(url=f"{FRONTEND_URL}?auth=error&reason=token_exchange_failed")
 
     token_data = token_response.json()
-    request.session["token_data"] = token_data
 
-    # Fetch basic user info and store it too
+    # Fetch user info
     userinfo_resp = requests.get(
         "https://www.googleapis.com/oauth2/v3/userinfo",
         headers={"Authorization": f"Bearer {token_data['access_token']}"}
     )
-    if userinfo_resp.status_code == 200:
-        request.session["user_info"] = userinfo_resp.json()
+    user_info = userinfo_resp.json() if userinfo_resp.status_code == 200 else {}
 
-    # Redirect to frontend after successful login
-    return RedirectResponse(url=f"{FRONTEND_URL}?auth=success")
+    # Bundle token + user info, base64 encode, pass via URL fragment
+    payload = json.dumps({
+        "token_data": token_data,
+        "user_info": user_info,
+    })
+    encoded = base64.urlsafe_b64encode(payload.encode()).decode()
 
-
-@app.get("/auth/me")
-def auth_me(request: Request):
-    """Returns logged-in user info."""
-    user_info = request.session.get("user_info")
-    if not user_info:
-        return JSONResponse(status_code=401, content={"authenticated": False})
-    return {"authenticated": True, "user": user_info}
-
-
-@app.get("/auth/logout")
-def auth_logout(request: Request):
-    """Clears the session."""
-    request.session.clear()
-    return {"message": "Logged out successfully."}
+    # Use fragment (#) — never sent to server, stays in browser only
+    return RedirectResponse(url=f"{FRONTEND_URL}#auth={encoded}")
 
 
 @app.get("/list-properties")
@@ -129,19 +132,15 @@ def list_properties(request: Request):
     try:
         admin_client = AnalyticsAdminServiceClient(credentials=creds)
         accounts = admin_client.list_account_summaries()
-
         properties = []
         for account in accounts:
-            for prop_summary in account.property_summaries:
+            for prop in account.property_summaries:
                 properties.append({
-                    "property_id": prop_summary.property.replace("properties/", ""),
-                    "display_name": prop_summary.display_name,
+                    "property_id": prop.property.replace("properties/", ""),
+                    "display_name": prop.display_name,
                     "account_name": account.display_name,
-                    "property_resource": prop_summary.property,
                 })
-
         return {"success": True, "properties": properties}
-
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
