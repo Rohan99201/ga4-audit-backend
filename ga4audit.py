@@ -138,20 +138,51 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
         )
         log("Streams", f"{stream.display_name or 'Unnamed'} ({stream_type})", stream.name)
 
-    # ── Limits ─────────────────────────────────────────────────────────────
-    log("Limits", "Custom Dimensions Used",
-        f"{len(list(admin_client.list_custom_dimensions(parent=property_id)))} / 50")
+    # ── Limits (dynamic based on service level) ────────────────────────────
+    # Detect 360 vs Standard from the property object
+    is_360 = (
+        hasattr(prop, "service_level") and
+        str(prop.service_level) in ("ServiceLevel.GOOGLE_ANALYTICS_360", "2", "GOOGLE_ANALYTICS_360")
+    )
+    tier_label = "GA4 360" if is_360 else "Standard"
+    log("Settings", "Service Level", f"{'✅ Google Analytics 360' if is_360 else '📊 Google Analytics Standard'}")
+
+    # Limits table per tier (from GA4 docs)
+    # Standard: user-scoped dims=25, event-scoped dims=50, item-scoped dims=10, metrics=50, calc metrics=5
+    # 360:      user-scoped dims=100, event-scoped dims=125, item-scoped dims=25, metrics=125, calc metrics=50
+    custom_dims_list   = list(admin_client.list_custom_dimensions(parent=property_id))
+    custom_metrics_list = list(admin_client.list_custom_metrics(parent=property_id))
+    key_events_list    = list(admin_client.list_conversion_events(parent=property_id))
+    audiences_list     = list(admin_client.list_audiences(parent=property_id))
+
+    # Split custom dims by scope
+    user_dims  = [d for d in custom_dims_list if "USER"  in str(d.scope)]
+    event_dims = [d for d in custom_dims_list if "EVENT" in str(d.scope)]
+    item_dims  = [d for d in custom_dims_list if "ITEM"  in str(d.scope)]
+
+    user_dim_limit  = 100 if is_360 else 25
+    event_dim_limit = 125 if is_360 else 50
+    item_dim_limit  = 25  if is_360 else 10
+    metric_limit    = 125 if is_360 else 50
+    key_event_limit = 50   # same for both tiers
+    audience_limit  = 100  # same for both tiers
+
+    log("Limits", "User-Scoped Custom Dimensions Used",
+        f"{len(user_dims)} / {user_dim_limit} ({tier_label})")
+    log("Limits", "Event-Scoped Custom Dimensions Used",
+        f"{len(event_dims)} / {event_dim_limit} ({tier_label})")
+    log("Limits", "Item-Scoped Custom Dimensions Used",
+        f"{len(item_dims)} / {item_dim_limit} ({tier_label})")
     log("Limits", "Custom Metrics Used",
-        f"{len(list(admin_client.list_custom_metrics(parent=property_id)))} / 50")
+        f"{len(custom_metrics_list)} / {metric_limit} ({tier_label})")
     log("Limits", "Key Events Used",
-        f"{len(list(admin_client.list_conversion_events(parent=property_id)))} / 50")
+        f"{len(key_events_list)} / {key_event_limit}")
     log("Limits", "Audiences Used",
-        f"{len(list(admin_client.list_audiences(parent=property_id)))} / 100")
+        f"{len(audiences_list)} / {audience_limit}")
 
     # ── Custom Dimension Details ───────────────────────────────────────────
-    custom_dims = list(admin_client.list_custom_dimensions(parent=property_id))
-    if custom_dims:
-        for dim in custom_dims:
+    if custom_dims_list:
+        for dim in custom_dims_list:
             audit_rows.append({
                 "Category": "Custom Dimension Details",
                 "Check": dim.display_name,
@@ -164,9 +195,8 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
         log("Custom Dimension Details", "No Custom Dimensions Found", "N/A")
 
     # ── Key Event Details ──────────────────────────────────────────────────
-    key_events = list(admin_client.list_conversion_events(parent=property_id))
-    if key_events:
-        for event in key_events:
+    if key_events_list:
+        for event in key_events_list:
             formatted_time = datetime.datetime.fromisoformat(
                 str(event.create_time).replace(" ", "T", 1)
             ).strftime("%Y-%m-%d")
