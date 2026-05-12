@@ -164,3 +164,125 @@ def run_audit(
         return {"success": True, "data": results}
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+
+@app.post("/sdr-report")
+def sdr_report(
+    request: Request,
+    property_id: str = Query(...),
+    start_date: str = Query("30daysAgo"),
+    end_date: str = Query("today"),
+    body: dict = None,
+):
+    """
+    Fetches live GA4 data for a list of SDR events.
+    POST body: { "events": ["event_name_1", "event_name_2", ...], "params": ["param1", "param2"] }
+    Returns event counts and top parameter values for each requested event.
+    """
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.analytics.data_v1beta.types import (
+        RunReportRequest, Dimension, Metric, FilterExpression,
+        Filter, FilterExpressionList
+    )
+
+    creds = get_user_credentials(request)
+
+    if not body:
+        return {"success": False, "error": "Request body required with 'events' list."}
+
+    event_names = body.get("events", [])
+    param_names = body.get("params", [])
+
+    if not event_names:
+        return {"success": False, "error": "No events provided."}
+
+    try:
+        data_client = BetaAnalyticsDataClient(credentials=creds)
+        prop = f"properties/{property_id}"
+        report_rows = []
+
+        # ── Step 1: Event counts per event name ────────────────────────────
+        event_count_req = RunReportRequest(
+            property=prop,
+            dimensions=[Dimension(name="eventName")],
+            metrics=[Metric(name="eventCount"), Metric(name="totalUsers")],
+            date_ranges=[{"start_date": start_date, "end_date": end_date}],
+            dimension_filter=FilterExpression(
+                or_group=FilterExpressionList(
+                    expressions=[
+                        FilterExpression(filter=Filter(
+                            field_name="eventName",
+                            string_filter=Filter.StringFilter(
+                                match_type=Filter.StringFilter.MatchType.EXACT,
+                                value=evt,
+                            )
+                        ))
+                        for evt in event_names
+                    ]
+                )
+            ),
+            limit=1000,
+        )
+        event_counts = {}
+        event_users  = {}
+        resp = data_client.run_report(request=event_count_req)
+        for row in resp.rows:
+            evt = row.dimension_values[0].value
+            event_counts[evt] = int(row.metric_values[0].value)
+            event_users[evt]  = int(row.metric_values[1].value)
+
+        # ── Step 2: Per-event, per-param top values ────────────────────────
+        param_data = {}  # { "event_name": { "param_name": [top values] } }
+
+        for evt in event_names:
+            param_data[evt] = {}
+            for param in param_names:
+                if not param:
+                    continue
+                # Use eventName + customEvent:param or just param dimension
+                try:
+                    param_req = RunReportRequest(
+                        property=prop,
+                        dimensions=[
+                            Dimension(name="eventName"),
+                            Dimension(name=f"customEvent:{param}"),
+                        ],
+                        metrics=[Metric(name="eventCount")],
+                        date_ranges=[{"start_date": start_date, "end_date": end_date}],
+                        dimension_filter=FilterExpression(
+                            filter=Filter(
+                                field_name="eventName",
+                                string_filter=Filter.StringFilter(
+                                    match_type=Filter.StringFilter.MatchType.EXACT,
+                                    value=evt,
+                                )
+                            )
+                        ),
+                        limit=10,
+                        order_bys=[{"metric": {"metric_name": "eventCount"}, "desc": True}],
+                    )
+                    param_resp = data_client.run_report(request=param_req)
+                    top_values = []
+                    for row in param_resp.rows:
+                        val = row.dimension_values[1].value
+                        cnt = int(row.metric_values[0].value)
+                        if val and val not in ["(not set)", ""]:
+                            top_values.append({"value": val, "count": cnt})
+                    param_data[evt][param] = top_values
+                except Exception:
+                    param_data[evt][param] = []
+
+        # ── Build response ─────────────────────────────────────────────────
+        for evt in event_names:
+            report_rows.append({
+                "eventName":   evt,
+                "eventCount":  event_counts.get(evt, 0),
+                "totalUsers":  event_users.get(evt, 0),
+                "inGA4":       evt in event_counts,
+                "paramData":   param_data.get(evt, {}),
+            })
+
+        return {"success": True, "report": report_rows}
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}

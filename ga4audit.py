@@ -180,19 +180,28 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     log("Limits", "Audiences Used",
         f"{len(audiences_list)} / {audience_limit}")
 
-    # ── Custom Dimension Details ───────────────────────────────────────────
+    # ── Custom Dimension Details — split by scope ──────────────────────────
     if custom_dims_list:
         for dim in custom_dims_list:
+            scope_raw = dim.scope.name  # e.g. "EVENT", "USER", "ITEM"
+            scope_label = scope_raw.replace("_", " ").title()
+            # Route to scope-specific category
+            category = (
+                "Custom Dimensions - User Scoped"  if "USER"  in scope_raw else
+                "Custom Dimensions - Item Scoped"  if "ITEM"  in scope_raw else
+                "Custom Dimensions - Event Scoped"
+            )
             audit_rows.append({
-                "Category": "Custom Dimension Details",
+                "Category": category,
                 "Check": dim.display_name,
                 "Result": {
                     "Parameter Name": dim.parameter_name,
-                    "Scope": dim.scope.name.replace("_", " ").title(),
+                    "Scope": scope_label,
+                    "Ads Personalization Excluded": str(getattr(dim, "disallow_ads_personalization", False)),
                 },
             })
     else:
-        log("Custom Dimension Details", "No Custom Dimensions Found", "N/A")
+        log("Custom Dimensions - Event Scoped", "No Custom Dimensions Found", "N/A")
 
     # ── Key Event Details ──────────────────────────────────────────────────
     if key_events_list:
@@ -392,23 +401,25 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
         items_only_tids if items_only_tids else "✅ All item transactions have matching revenue data.")
 
     return {
-        "Property Details":               [r for r in audit_rows if r["Category"] == "Settings"],
-        "Streams Configuration":          [r for r in audit_rows if r["Category"] == "Streams"],
-        "GA4 Property Limits":            [r for r in audit_rows if r["Category"] == "Limits"],
-        "Custom Dimension Details":       [r for r in audit_rows if r["Category"] == "Custom Dimension Details"],
-        "Key Event Details":              [r for r in audit_rows if r["Category"] == "Key Event Details"],
-        "GA4 Events":                     [r for r in audit_rows if r["Category"] == "Event Inventory"],
-        "Landing Page Analysis":          [r for r in audit_rows if r["Category"] == "Landing Page Analysis"],
-        "Landing Page Data":              landing_page_data,
-        "Channel Grouping Analysis":      [r for r in audit_rows if r["Category"] == "Channel Grouping Analysis"],
-        "Channel Grouping Data":          channel_grouping_data,
-        "Unassigned Traffic Details":     [r for r in audit_rows if r["Category"] == "Unassigned Traffic Details"],
-        "Unassigned Source/Medium Data":  unassigned_source_medium_data,
-        "PII Check":                      [r for r in audit_rows if r["Category"] == "PII"],
-        "Transactions":                   [r for r in audit_rows if r["Category"] == "Transactions"],
-        "Transaction Mapping":            purchase_log,
+        "Property Details":                    [r for r in audit_rows if r["Category"] == "Settings"],
+        "Streams Configuration":               [r for r in audit_rows if r["Category"] == "Streams"],
+        "GA4 Property Limits":                 [r for r in audit_rows if r["Category"] == "Limits"],
+        "Custom Dimensions - Event Scoped":    [r for r in audit_rows if r["Category"] == "Custom Dimensions - Event Scoped"],
+        "Custom Dimensions - User Scoped":     [r for r in audit_rows if r["Category"] == "Custom Dimensions - User Scoped"],
+        "Custom Dimensions - Item Scoped":     [r for r in audit_rows if r["Category"] == "Custom Dimensions - Item Scoped"],
+        "Key Event Details":                   [r for r in audit_rows if r["Category"] == "Key Event Details"],
+        "GA4 Events":                          [r for r in audit_rows if r["Category"] == "Event Inventory"],
+        "Landing Page Analysis":               [r for r in audit_rows if r["Category"] == "Landing Page Analysis"],
+        "Landing Page Data":                   landing_page_data,
+        "Channel Grouping Analysis":           [r for r in audit_rows if r["Category"] == "Channel Grouping Analysis"],
+        "Channel Grouping Data":               channel_grouping_data,
+        "Unassigned Traffic Details":          [r for r in audit_rows if r["Category"] == "Unassigned Traffic Details"],
+        "Unassigned Source/Medium Data":       unassigned_source_medium_data,
+        "PII Check":                           [r for r in audit_rows if r["Category"] == "PII"],
+        "Transactions":                        [r for r in audit_rows if r["Category"] == "Transactions"],
+        "Transaction Mapping":                 purchase_log,
         "Transaction Where Item Data Missing": item_error_rows,
-        "Duplicate Transactions":         duplicate_tx_rows,
-        "Revenue Only Transactions":      revenue_only_tids,
-        "Items Only Transactions":        items_only_tids,
+        "Duplicate Transactions":              duplicate_tx_rows,
+        "Revenue Only Transactions":           revenue_only_tids,
+        "Items Only Transactions":             items_only_tids,
     }
