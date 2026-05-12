@@ -333,6 +333,39 @@ def explore(
                 desc=True,
             )]
 
+        # ── Build dimension filter from body ───────────────────────────────
+        filters_list = body.get("filters", [])  # [{dimension, matchType, value}]
+        dimension_filter = None
+
+        if filters_list:
+            from google.analytics.data_v1beta.types import FilterExpression, FilterExpressionList, Filter
+
+            def build_filter(f):
+                match_map = {
+                    "EXACT":       Filter.StringFilter.MatchType.EXACT,
+                    "BEGINS_WITH": Filter.StringFilter.MatchType.BEGINS_WITH,
+                    "ENDS_WITH":   Filter.StringFilter.MatchType.ENDS_WITH,
+                    "CONTAINS":    Filter.StringFilter.MatchType.CONTAINS,
+                    "REGEXP":      Filter.StringFilter.MatchType.FULL_REGEXP,
+                }
+                return FilterExpression(filter=Filter(
+                    field_name=f["dimension"],
+                    string_filter=Filter.StringFilter(
+                        match_type=match_map.get(f.get("matchType","CONTAINS"), Filter.StringFilter.MatchType.CONTAINS),
+                        value=f["value"],
+                        case_sensitive=False,
+                    )
+                ))
+
+            if len(filters_list) == 1:
+                dimension_filter = build_filter(filters_list[0])
+            else:
+                dimension_filter = FilterExpression(
+                    and_group=FilterExpressionList(
+                        expressions=[build_filter(f) for f in filters_list]
+                    )
+                )
+
         req = RunReportRequest(
             property=f"properties/{property_id}",
             dimensions=[Dimension(name=d) for d in dimensions],
@@ -340,6 +373,7 @@ def explore(
             date_ranges=[{"start_date": start_date, "end_date": end_date}],
             limit=limit,
             order_bys=order_bys,
+            dimension_filter=dimension_filter,
         )
 
         resp = data_client.run_report(request=req)
