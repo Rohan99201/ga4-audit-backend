@@ -286,3 +286,80 @@ def sdr_report(
 
     except Exception as e:
         return {"success": False, "error": str(e)}
+
+@app.post("/explore")
+def explore(
+    request: Request,
+    property_id: str = Query(...),
+    start_date: str = Query("30daysAgo"),
+    end_date: str = Query("today"),
+    body: dict = None,
+):
+    """
+    Flexible GA4 Data API explorer.
+    POST body: {
+      "dimensions": ["eventName", "sessionDefaultChannelGroup", ...],
+      "metrics": ["eventCount", "totalUsers", "sessions", ...],
+      "limit": 100,
+      "order_by_metric": "eventCount"
+    }
+    Returns rows with dimension values and metric values.
+    """
+    from google.analytics.data_v1beta import BetaAnalyticsDataClient
+    from google.analytics.data_v1beta.types import (
+        RunReportRequest, Dimension, Metric, OrderBy
+    )
+
+    creds = get_user_credentials(request)
+
+    if not body:
+        return {"success": False, "error": "Request body required."}
+
+    dimensions   = body.get("dimensions", [])
+    metrics      = body.get("metrics", [])
+    limit        = min(int(body.get("limit", 100)), 5000)
+    order_metric = body.get("order_by_metric", metrics[0] if metrics else None)
+
+    if not dimensions and not metrics:
+        return {"success": False, "error": "At least one dimension or metric required."}
+
+    try:
+        data_client = BetaAnalyticsDataClient(credentials=creds)
+
+        order_bys = []
+        if order_metric and order_metric in metrics:
+            order_bys = [OrderBy(
+                metric=OrderBy.MetricOrderBy(metric_name=order_metric),
+                desc=True,
+            )]
+
+        req = RunReportRequest(
+            property=f"properties/{property_id}",
+            dimensions=[Dimension(name=d) for d in dimensions],
+            metrics=[Metric(name=m) for m in metrics],
+            date_ranges=[{"start_date": start_date, "end_date": end_date}],
+            limit=limit,
+            order_bys=order_bys,
+        )
+
+        resp = data_client.run_report(request=req)
+
+        rows = []
+        for row in resp.rows:
+            r = {}
+            for i, d in enumerate(dimensions):
+                r[d] = row.dimension_values[i].value
+            for i, m in enumerate(metrics):
+                r[m] = row.metric_values[i].value
+            rows.append(r)
+
+        return {
+            "success": True,
+            "rows": rows,
+            "row_count": len(rows),
+            "dimensions": dimensions,
+            "metrics": metrics,
+        }
+
+    except Exception as e:
+        return {"success": False, "error": str(e)}
