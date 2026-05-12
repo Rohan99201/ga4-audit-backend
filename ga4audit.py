@@ -155,10 +155,10 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     key_events_list    = list(admin_client.list_conversion_events(parent=property_id))
     audiences_list     = list(admin_client.list_audiences(parent=property_id))
 
-    # Split custom dims by scope
-    user_dims  = [d for d in custom_dims_list if "USER"  in str(d.scope)]
-    event_dims = [d for d in custom_dims_list if "EVENT" in str(d.scope)]
-    item_dims  = [d for d in custom_dims_list if "ITEM"  in str(d.scope)]
+    # Split custom dims by scope — scope is an integer enum: 1=EVENT, 2=USER, 3=ITEM
+    user_dims  = [d for d in custom_dims_list if int(d.scope) == 2]
+    event_dims = [d for d in custom_dims_list if int(d.scope) == 1]
+    item_dims  = [d for d in custom_dims_list if int(d.scope) == 3]
 
     user_dim_limit  = 100 if is_360 else 25
     event_dim_limit = 125 if is_360 else 50
@@ -183,14 +183,14 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     # ── Custom Dimension Details — split by scope ──────────────────────────
     if custom_dims_list:
         for dim in custom_dims_list:
-            scope_raw = dim.scope.name  # e.g. "EVENT", "USER", "ITEM"
-            scope_label = scope_raw.replace("_", " ").title()
-            # Route to scope-specific category
-            category = (
-                "Custom Dimensions - User Scoped"  if "USER"  in scope_raw else
-                "Custom Dimensions - Item Scoped"  if "ITEM"  in scope_raw else
-                "Custom Dimensions - Event Scoped"
-            )
+            scope_int = int(dim.scope)  # 1=EVENT, 2=USER, 3=ITEM
+            scope_label = {1: "Event", 2: "User", 3: "Item"}.get(scope_int, str(dim.scope))
+            category = {
+                1: "Custom Dimensions - Event Scoped",
+                2: "Custom Dimensions - User Scoped",
+                3: "Custom Dimensions - Item Scoped",
+            }.get(scope_int, "Custom Dimensions - Event Scoped")
+
             audit_rows.append({
                 "Category": category,
                 "Check": dim.display_name,
