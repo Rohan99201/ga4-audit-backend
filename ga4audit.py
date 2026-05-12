@@ -10,24 +10,83 @@ from collections import Counter
 
 API_BASE_URL = "https://analyticsadmin.googleapis.com/v1beta"
 
+# ── PII Detection ──────────────────────────────────────────────────────────
+# Only flag parameters that carry actual personal data.
+# UTMs, click IDs (gclid, fbclid, gbraid, gad_*), campaign IDs are NOT PII.
+
+PII_PARAM_NAMES = re.compile(
+    r"(?:^|[?&])"
+    r"(?:email|e-mail|mail|fname|first_name|firstname|lname|last_name|lastname"
+    r"|fullname|full_name|name|phone|mobile|tel|pno|user_id|userid|uid|customerid"
+    r"|customer_id|member_id|memberid|subscriber_id|account_id)"
+    r"=([^&]+)",
+    re.IGNORECASE,
+)
+
+PII_EMAIL_IN_PATH = re.compile(
+    r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}",
+    re.IGNORECASE,
+)
+
+REDACTED_MARKER = "(redacted)"  # GA4 built-in PII redaction
+
+# Parameters that are never PII regardless of name
+NON_PII_PARAMS = {
+    "utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content",
+    "gclid", "fbclid", "gbraid", "wbraid", "msclkid", "ttclid", "li_fat_id",
+    "gad_source", "gad_campaignid", "gclsrc", "campid", "adid", "groupid",
+    "uadgroup", "uadcampaign", "lsid", "lssid", "tgid", "network", "device",
+    "type", "ad_pos", "fdid", "ptid", "lphys", "linst", "model", "sitetarg",
+}
+
+
+def is_pii(url_or_path: str) -> tuple[bool, str]:
+    """
+    Returns (True, reason) if actual PII is detected, else (False, "").
+    Skips GA4-redacted values, UTMs, and click IDs.
+    """
+    if not url_or_path or REDACTED_MARKER in url_or_path:
+        return False, ""
+
+    # Check for raw email addresses embedded directly in the path/URL
+    email_match = PII_EMAIL_IN_PATH.search(url_or_path)
+    if email_match:
+        return True, f"Email address found: {email_match.group()}"
+
+    # Check for PII parameter names with non-empty, non-redacted values
+    for match in PII_PARAM_NAMES.finditer(url_or_path):
+        param_full = match.group(0).lstrip("?&")
+        param_name = param_full.split("=")[0].lower()
+        param_value = match.group(1)
+
+        # Skip if it's a known non-PII param
+        if param_name in NON_PII_PARAMS:
+            continue
+        # Skip if value is empty, (not set), or redacted
+        if not param_value or param_value in ["(not set)", "(redacted)", REDACTED_MARKER]:
+            continue
+        # Skip if value looks like a numeric ID only (campaign/ad IDs)
+        if re.match(r"^\d+$", param_value) and param_name in {"id", "uid", "userid"}:
+            continue
+
+        return True, f"PII parameter detected: {param_name}={param_value[:40]}"
+
+    return False, ""
+
 
 def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo", end_date="today"):
-    """
-    Runs the full GA4 audit using the provided OAuth2 Credentials object.
-    This replaces the old service-account-based run_ga4_audit().
-    """
     admin_client = AnalyticsAdminServiceClient(credentials=creds)
     data_client  = BetaAnalyticsDataClient(credentials=creds)
 
     property_id = f"properties/{property_numeric_id}"
 
-    audit_rows                   = []
-    item_error_rows              = []
-    duplicate_tx_rows            = []
-    purchase_log                 = []
-    pii_found                    = False
-    landing_page_data            = []
-    channel_grouping_data        = []
+    audit_rows                    = []
+    item_error_rows               = []
+    duplicate_tx_rows             = []
+    purchase_log                  = []
+    pii_found                     = False
+    landing_page_data             = []
+    channel_grouping_data         = []
     unassigned_source_medium_data = []
 
     def log(category, check, result):
@@ -39,7 +98,6 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     log("Settings", "Time Zone", prop.time_zone)
     log("Settings", "Currency", prop.currency_code)
 
-    # User Data Collection Acknowledgment
     acknowledgement_string = (
         "I acknowledge that I have the necessary privacy disclosures and rights from my end users "
         "for the collection and processing of their data, including the association of such data "
@@ -48,10 +106,7 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     try:
         if not creds.valid:
             creds.refresh(google.auth.transport.requests.Request())
-        headers = {
-            "Authorization": f"Bearer {creds.token}",
-            "Content-Type": "application/json",
-        }
+        headers = {"Authorization": f"Bearer {creds.token}", "Content-Type": "application/json"}
         resp = requests.post(
             f"{API_BASE_URL}/{property_id}:acknowledgeUserDataCollection",
             headers=headers,
@@ -65,7 +120,6 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     except Exception as e:
         log("Settings", "User Data Collection Acknowledgment", f"❌ Failed: {e}")
 
-    # Retention
     try:
         retention = admin_client.get_data_retention_settings(
             name=f"properties/{property_numeric_id}/dataRetentionSettings"
@@ -217,7 +271,7 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     except Exception as e:
         log("Unassigned Traffic Details", "Analysis Failed", str(e))
 
-    # ── PII Check ──────────────────────────────────────────────────────────
+    # ── PII Check (improved) ───────────────────────────────────────────────
     for dim in ["pagePath", "pageLocation"]:
         try:
             pii_req = RunReportRequest(
@@ -228,13 +282,15 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
             )
             for row in data_client.run_report(request=pii_req).rows:
                 val = row.dimension_values[0].value
-                if re.search(r"gmail\.com|email=|phone=|pno=|\+91\d{10}|\d{10}", val):
-                    log("PII", f"Potential PII in {dim}", val)
+                found, reason = is_pii(val)
+                if found:
+                    log("PII", f"Potential PII in {dim}", f"❌ {reason} — {val[:120]}")
                     pii_found = True
         except Exception:
             continue
+
     if not pii_found:
-        log("PII", "Scan Result", "✅ No potential PII found in page paths or URLs.")
+        log("PII", "Scan Result", "✅ No PII found. UTMs, click IDs and redacted values excluded.")
 
     # ── Transactions ───────────────────────────────────────────────────────
     transaction_ids    = set()
@@ -305,7 +361,6 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     log("Transactions", "With Items but No Revenue",
         items_only_tids if items_only_tids else "✅ All item transactions have matching revenue data.")
 
-    # ── Return ─────────────────────────────────────────────────────────────
     return {
         "Property Details":               [r for r in audit_rows if r["Category"] == "Settings"],
         "Streams Configuration":          [r for r in audit_rows if r["Category"] == "Streams"],
