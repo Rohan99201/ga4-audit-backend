@@ -928,449 +928,622 @@ def export_pptx(
     )
 
 @app.post("/export/pptx-bl")
-def export_pptx_bl(
-    request: Request,
-    body: dict = None,
-):
+def export_pptx_bl(request: Request, body: dict = None):
     """
-    Generates a Brainlabs-format GA4 audit .pptx matching the Brookfield/GOAT USA template.
-    Structure: Cover → Property Details → Audit Overview → Section Dividers → Finding Slides → Conclusion → Thank You
-    POST body: { "data": <audit_data>, "property_name": "...", "date_range": "..." }
+    Pixel-perfect replica of the mynewcomp GA4 Audit template.
+    Exact colours, positions, fonts, shapes extracted from the uploaded .pptx.
     """
     import io
+    from datetime import date
     from pptx import Presentation
-    from pptx.util import Inches, Pt
+    from pptx.util import Inches, Pt, Emu
     from pptx.dml.color import RGBColor
     from pptx.enum.text import PP_ALIGN
+    from pptx.util import Inches, Pt
+    from pptx.oxml.ns import qn
+    from lxml import etree
     from fastapi.responses import StreamingResponse
 
     get_user_credentials(request)
-
     if not body:
-        return {"success": False, "error": "Request body required."}
+        return {"success": False, "error": "Body required."}
 
     audit_data = body.get("data", {})
     prop_name  = body.get("property_name", "GA4 Property")
-    date_range = body.get("date_range", "30daysAgo – today")
+    date_range = body.get("date_range", "")
+    today_str  = date.today().strftime("%B %Y")
 
-    # ── Brand colours ──────────────────────────────────────────────────────
-    C_BLK  = RGBColor(0x0A, 0x0A, 0x0A)
-    C_YLW  = RGBColor(0xFF, 0xDD, 0x33)
-    C_WHT  = RGBColor(0xFF, 0xFF, 0xFF)
-    C_OFFWHT = RGBColor(0xFF, 0xFC, 0xEB)
-    C_DBLU = RGBColor(0x1E, 0x3A, 0x6B)   # dark navy for table headers
-    C_LBLU = RGBColor(0xE8, 0xF0, 0xFE)   # light blue table row bg
-    C_PURP = RGBColor(0xA8, 0x5E, 0xC8)   # recommendation purple
-    C_GRNA = RGBColor(0x00, 0xC8, 0x96)   # pass green
-    C_ORAN = RGBColor(0xFF, 0x98, 0x00)   # medium orange
-    C_RED  = RGBColor(0xCC, 0x22, 0x00)   # high red
-    C_LGRY = RGBColor(0x9A, 0x9A, 0x9A)
+    # ── EXACT COLOURS FROM TEMPLATE ────────────────────────────────────────
+    C_BG        = RGBColor(0xFF, 0xFE, 0xF7)   # FFFEF7 — cream/off-white bg
+    C_BLACK     = RGBColor(0x00, 0x00, 0x00)   # 000000
+    C_WHITE     = RGBColor(0xFF, 0xFF, 0xFF)   # FFFFFF
+    C_YELLOW_HL = RGBColor(0xFF, 0xE7, 0x70)   # FFE770 — cover banner
+    C_BLUE_LIGHT= RGBColor(0xEB, 0xF9, 0xFF)   # EBF9FF — screenshot placeholder bg
+    C_BLUE_SEC  = RGBColor(0x80, 0xDB, 0xFF)   # 80DBFF — section divider bg
+    C_YELLOW_NT = RGBColor(0xFF, 0xF5, 0xC2)   # FFF5C2 — note/evidence box
+    C_GREEN     = RGBColor(0x4C, 0xAF, 0x50)   # 4CAF50 — Pass badge
+    C_AMBER     = RGBColor(0xFF, 0xC1, 0x07)   # FFC107 — TBD badge
+    C_RED       = RGBColor(0xE5, 0x39, 0x35)   # E53935 — Fail/High badge
+    C_LGREY     = RGBColor(0x99, 0x99, 0x99)   # separator line
+
+    # ── SLIDE DIMENSIONS (exact from template: 12191695 × 6858000 EMU) ─────
+    W_IN = 12191695 / 914400   # ≈ 13.33"
+    H_IN = 6858000  / 914400   # ≈ 7.5"
 
     prs = Presentation()
-    prs.slide_width  = Inches(13.33)
-    prs.slide_height = Inches(7.5)
+    prs.slide_width  = Emu(12191695)
+    prs.slide_height = Emu(6858000)
     blank = prs.slide_layouts[6]
 
-    def tb(slide, text, x, y, w, h, size=11, bold=False, color=None,
-           align=PP_ALIGN.LEFT, wrap=True, italic=False):
-        t = slide.shapes.add_textbox(Inches(x), Inches(y), Inches(w), Inches(h))
-        tf = t.text_frame; tf.word_wrap = wrap
-        p = tf.paragraphs[0]; p.alignment = align
-        r = p.add_run(); r.text = str(text)[:200]
-        r.font.name = "Arial"; r.font.size = Pt(size)
-        r.font.bold = bold; r.font.italic = italic
-        if color: r.font.color.rgb = color
-        return t
+    # ── HELPER FUNCTIONS ───────────────────────────────────────────────────
+    def rgb(r, g, b): return RGBColor(r, g, b)
+    def _i(val): return Inches(val)
 
-    def rect(slide, x, y, w, h, fill, line=None):
-        s = slide.shapes.add_shape(1, Inches(x), Inches(y), Inches(w), Inches(h))
-        s.fill.solid(); s.fill.fore_color.rgb = fill
-        if line: s.line.color.rgb = line; s.line.width = Pt(0.5)
-        else: s.line.fill.background()
-        return s
+    def add_rect_shape(slide, x, y, w, h, fill_color, line_color=None, line_w_pt=0.75, rounding=None):
+        """Add a rectangle (optionally rounded) with fill."""
+        from pptx.util import Pt as pPt
+        sp = slide.shapes.add_shape(
+            1,  # MSO_SHAPE_TYPE.RECTANGLE
+            _i(x), _i(y), _i(w), _i(h)
+        )
+        sp.fill.solid()
+        sp.fill.fore_color.rgb = fill_color
+        if line_color:
+            sp.line.color.rgb = line_color
+            sp.line.width = Pt(line_w_pt)
+        else:
+            sp.line.fill.background()
 
-    def status_badge(slide, text, color, x=11.8, y=0.1):
-        rect(slide, x, y, 1.3, 0.35, color)
-        tb(slide, text, x, y+0.04, 1.3, 0.28, size=10, bold=True,
-           color=C_WHT, align=PP_ALIGN.CENTER)
+        if rounding == 'ellipse':
+            # Change prstGeom to ellipse
+            spPr = sp._element.find(qn('p:spPr'))
+            if spPr is not None:
+                old_geom = spPr.find(qn('a:prstGeom'))
+                if old_geom is not None:
+                    spPr.remove(old_geom)
+                new_geom = etree.SubElement(spPr, qn('a:prstGeom'))
+                new_geom.set('prst', 'ellipse')
+                etree.SubElement(new_geom, qn('a:avLst'))
+        elif rounding == 'roundRect':
+            spPr = sp._element.find(qn('p:spPr'))
+            if spPr is not None:
+                old_geom = spPr.find(qn('a:prstGeom'))
+                if old_geom is not None:
+                    spPr.remove(old_geom)
+                new_geom = etree.SubElement(spPr, qn('a:prstGeom'))
+                new_geom.set('prst', 'roundRect')
+                avLst = etree.SubElement(new_geom, qn('a:avLst'))
+                gd = etree.SubElement(avLst, qn('a:gd'))
+                gd.set('name', 'adj'); gd.set('fmla', 'val 16667')
+        return sp
 
-    def brainlabs_logo_small(slide, x=12.5, y=6.9):
-        """Small BL mark bottom-left."""
-        rect(slide, x, y, 0.5, 0.3, C_YLW)
-        tb(slide, "BL", x, y+0.02, 0.5, 0.26, size=8, bold=True,
-           color=C_BLK, align=PP_ALIGN.CENTER)
+    def add_tb(slide, text, x, y, w, h, size=11, bold=False, italic=False,
+               color=None, align=PP_ALIGN.LEFT, wrap=True, font="Calibri"):
+        """Add a plain text box."""
+        txb = slide.shapes.add_textbox(_i(x), _i(y), _i(w), _i(h))
+        tf  = txb.text_frame
+        tf.word_wrap = wrap
+        p   = tf.paragraphs[0]
+        p.alignment = align
+        run = p.add_run()
+        run.text = str(text)
+        run.font.name = font
+        run.font.size = Pt(size)
+        run.font.bold = bold
+        run.font.italic = italic
+        if color:
+            run.font.color.rgb = color
+        else:
+            run.font.color.rgb = C_BLACK
+        return txb
 
-    def section_line(slide):
-        """Bottom progress-line decoration."""
-        rect(slide, 0.5, 7.2, 11.8, 0.04, C_BLK)
-        rect(slide, 0.5, 7.2, 0.12, 0.12, C_BLK)
-        rect(slide, 12.18, 7.2, 0.12, 0.12, C_BLK)
+    def add_connector(slide, x1, y1, x2, y2, color=C_BLACK, width_pt=0.75):
+        """Add a straight line connector."""
+        from pptx.util import Pt as pPt
+        import math
+        x = min(x1, x2); y = min(y1, y2)
+        w = abs(x2 - x1) or 0.001; h = abs(y2 - y1) or 0.001
+        conn = slide.shapes.add_connector(1, _i(x1), _i(y1), _i(x2), _i(y2))
+        conn.line.color.rgb = color
+        conn.line.width = Pt(width_pt)
+        return conn
 
-    def content_slide_frame(title, subtitle=None):
+    def add_badge(slide, text, x, y, w, h, bg_color, text_color=C_WHITE, size=12):
+        """Pill-shaped status badge using roundRect."""
+        sp = add_rect_shape(slide, x, y, w, h, bg_color, rounding='roundRect')
+        sp.line.fill.background()
+        # Add text manually to the shape
+        tf = sp.text_frame
+        tf.word_wrap = False
+        p = tf.paragraphs[0]
+        p.alignment = PP_ALIGN.CENTER
+        run = p.add_run()
+        run.text = text
+        run.font.name = "Calibri"
+        run.font.size = Pt(size)
+        run.font.bold = True
+        run.font.color.rgb = text_color
+        return sp
+
+    def page_number(slide, num):
+        add_tb(slide, str(num), 0.30, 7.20, 0.50, 0.25, size=10, color=C_BLACK)
+
+    def bottom_line(slide):
+        """Thin grey separator line at bottom, matching template."""
+        add_rect_shape(slide, 0.30, 7.15, W_IN - 0.60, 0.03, C_LGREY)
+
+    def set_bg(slide, color):
+        bg = slide.background
+        fill = bg.fill
+        fill.solid()
+        fill.fore_color.rgb = color
+
+    # ── DATA HELPERS ───────────────────────────────────────────────────────
+    def g(sec, chk, default="[To be confirmed]"):
+        return next((str(e.get("Result","")) for e in audit_data.get(sec,[]) if e.get("Check")==chk), default)
+
+    def badge_for_result(result_str):
+        """Return (badge_text, badge_color, text_color) based on result."""
+        s = str(result_str)
+        if "✅" in s:   return ("Pass",   C_GREEN, C_WHITE)
+        if "❌" in s:   return ("Fail",   C_RED,   C_WHITE)
+        return ("TBD",    C_AMBER, C_BLACK)
+
+    # Compute audit overview rows
+    def g_pct(val_str):
+        try: return float(str(val_str).replace("%","").strip())
+        except: return 0.0
+
+    lp_pct_raw  = g("Landing Page Analysis","Landing Page (not set) %","0%")
+    ua_pct_raw  = g("Channel Grouping Analysis","Unassigned %","0%")
+    dup_raw     = g("Transactions","Duplicate Transaction Count","0")
+    try: dup_count = int(str(dup_raw).replace(",",""))
+    except: dup_count = 0
+
+    pii_issues  = [e for e in audit_data.get("PII Check",[]) if "❌" in str(e.get("Result",""))]
+    event_dims  = audit_data.get("Custom Dimensions - Event Scoped",[])
+    user_dims   = audit_data.get("Custom Dimensions - User Scoped",[])
+    item_dims   = audit_data.get("Custom Dimensions - Item Scoped",[])
+    total_dims  = len(event_dims)+len(user_dims)+len(item_dims)
+    ke_list     = audit_data.get("Key Event Details",[])
+    events      = audit_data.get("GA4 Events",[])
+
+    # Retention check
+    ret_val = g("Property Details","Retention Period","")
+    ret_ok  = "14" in str(ret_val) or "50" in str(ret_val)
+
+    overview_rows = [
+        ("Consent Management",
+         "Configuration not visible in the dashboard. Confirm Consent Mode v2 setup, banner behaviour, and tag binding.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Google Signals",
+         g("Property Details","Google Signals","User Data Collection acknowledged. Confirm the Google Signals toggle is active."),
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Data Retention",
+         f"Currently set to {ret_val}. Should be raised to 14 months (max for Standard) to retain user/event data for longer reporting windows." if not ret_ok else f"Set to maximum: {ret_val}.",
+         ("Pass", C_GREEN, C_WHITE) if ret_ok else ("Fail", C_RED, C_WHITE)),
+        ("Data Filters / Internal traffic",
+         "Filter state not visible in the dashboard. Confirm internal traffic exclusion is Active, not Testing.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Cross-domain measurement",
+         "Not visible in the dashboard. Confirm if any cross-domain journeys exist and configure if required.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Session timeout",
+         "Not visible in the dashboard. Confirm defaults (30 min / 10 sec) are in place.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Reporting Identity",
+         "Not visible in the dashboard. Confirm setting matches the User-ID approach.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Attribution Settings",
+         "Not visible in the dashboard. Confirm Data-driven model with default look-back windows.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Product Linking",
+         "Not visible in the dashboard. Confirm Google Ads, Search Console, BigQuery, etc. are linked.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("PII",
+         "PII scan returned no issues. UTMs, click IDs and redacted values excluded." if not pii_issues else f"{len(pii_issues)} PII issue(s) found in page paths.",
+         ("Pass", C_GREEN, C_WHITE) if not pii_issues else ("Fail", C_RED, C_WHITE)),
+    ]
+    overview_rows2 = [
+        ("User-ID",
+         "Not visible in the dashboard. If login exists, implement User-ID for cross-device tracking.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Custom Definitions",
+         f"{total_dims} custom dimension(s) configured." if total_dims > 0 else "Zero custom dimensions and metrics configured. Opportunity for richer analysis.",
+         ("Pass", C_GREEN, C_WHITE) if total_dims > 0 else ("Fail", C_RED, C_WHITE)),
+        ("Key Events",
+         f"{len(ke_list)} key event(s) configured." if len(ke_list) >= 3 else f"Only {len(ke_list)} key event(s) configured. Add more events that reflect business goals.",
+         ("Pass", C_GREEN, C_WHITE) if len(ke_list) >= 3 else ("Fail", C_RED, C_WHITE)),
+        ("Transaction Health",
+         f"No duplicate transactions detected." if dup_count == 0 else f"{dup_count} duplicate transaction IDs found.",
+         ("Pass", C_GREEN, C_WHITE) if dup_count == 0 else ("Fail", C_RED, C_WHITE)),
+        ("Landing Page (not set) %",
+         f"{lp_pct_raw} — {'clean.' if g_pct(lp_pct_raw) <= 10 else 'Review session_start implementation.'}",
+         ("Pass", C_GREEN, C_WHITE) if g_pct(lp_pct_raw) <= 10 else ("Fail", C_RED, C_WHITE)),
+        ("Unassigned traffic",
+         f"{ua_pct_raw} unassigned. {'Within threshold.' if g_pct(ua_pct_raw) <= 10 else 'Review UTM parameters and Custom Channel Grouping.'}",
+         ("Pass", C_GREEN, C_WHITE) if g_pct(ua_pct_raw) <= 10 else ("TBD", C_AMBER, C_BLACK)),
+        ("GTM Configuration",
+         "Container details not in the dashboard. Audit container quality, folders, tags, triggers, and Consent Mode binding.",
+         ("TBD", C_AMBER, C_BLACK)),
+        ("Site-level event tracking",
+         "Site interactions (forms, CTAs, navigation) not visible in the dashboard. Map gaps against business goals.",
+         ("TBD", C_AMBER, C_BLACK)),
+    ]
+
+    # ── SLIDE BUILDERS ─────────────────────────────────────────────────────
+
+    def make_cover():
         s = prs.slides.add_slide(blank)
-        s.background.fill.solid(); s.background.fill.fore_color.rgb = C_WHT
-        # title underline
-        tb(s, title, 0.5, 0.2, 9.0, 0.65, size=20, bold=True, color=C_BLK)
-        rect(s, 0.5, 0.9, 2.5, 0.06, C_DBLU)
-        if subtitle:
-            tb(s, subtitle, 0.5, 1.0, 9.0, 0.4, size=11, color=C_LGRY)
-        brainlabs_logo_small(s)
-        section_line(s)
-        return s
+        set_bg(s, C_BG)
+        # Yellow banner "GOOGLE ANALYTICS 4"
+        banner = add_rect_shape(s, 3.50, 2.20, 9.00, 1.00, C_YELLOW_HL)
+        tf = banner.text_frame; tf.word_wrap = False
+        p = tf.paragraphs[0]; p.alignment = PP_ALIGN.LEFT
+        run = p.add_run()
+        run.text = "  GOOGLE ANALYTICS 4"
+        run.font.name = "Calibri"; run.font.size = Pt(14)
+        run.font.bold = True; run.font.color.rgb = C_BLACK
 
-    def section_divider(title, subtitle="", bg=C_DBLU):
+        # Main title italic bold
+        add_tb(s, "Audit Findings &\nRecommendations",
+               3.50, 3.00, 9.00, 2.00, size=54, bold=True, italic=True, color=C_BLACK)
+        # Subtitle
+        add_tb(s, f"{prop_name} · {today_str}",
+               3.50, 5.30, 9.00, 0.50, size=18, bold=False, color=C_BLACK)
+
+        # Client circle (rounded rect)
+        add_rect_shape(s, 0.80, 1.80, 2.00, 2.00, C_WHITE, C_BLACK, 0.75, 'roundRect')
+        add_rect_shape(s, 0.80, 1.80, 2.00, 2.00, C_WHITE, C_BLACK, 0.75, 'ellipse')
+        add_tb(s, prop_name[:20], 0.80, 2.50, 2.00, 0.60, size=18, bold=True, color=C_BLACK, align=PP_ALIGN.CENTER)
+
+        # Connector line
+        add_connector(s, 1.80, 3.80, 1.80, 4.80)
+
+        # Brainlabs circle
+        add_rect_shape(s, 0.80, 4.80, 2.00, 2.00, C_WHITE, C_BLACK, 0.75, 'ellipse')
+        add_tb(s, "brainlabs", 0.80, 5.50, 2.00, 0.60, size=18, bold=True, italic=True, color=C_BLACK, align=PP_ALIGN.CENTER)
+
+    def make_property_stream():
         s = prs.slides.add_slide(blank)
-        s.background.fill.solid(); s.background.fill.fore_color.rgb = bg
-        tb(s, title, 1.0, 2.8, 10.0, 1.2, size=42, bold=True,
-           italic=True, color=C_BLK, align=PP_ALIGN.LEFT)
-        if subtitle:
-            tb(s, subtitle, 1.0, 4.1, 8.0, 0.5, size=14, color=C_BLK)
-        # BL logo top-right
-        rect(s, 12.0, 0.15, 0.7, 0.42, C_YLW)
-        tb(s, "BL", 12.0, 0.15, 0.7, 0.42, size=9, bold=True,
-           color=C_BLK, align=PP_ALIGN.CENTER)
-        section_line(s)
-        return s
+        set_bg(s, C_BG)
+        # Title
+        add_tb(s, "Property & Stream details", 0.50, 0.40, 9.00, 0.70, size=28, bold=True, italic=True, color=C_BLACK)
 
-    def obs_rec_slide(title, observation, recommendation, impact_badge, impact_color, evidence_text=""):
-        s = content_slide_frame(title)
-        status_badge(s, impact_badge, impact_color)
-        # Observation box (dark navy)
-        rect(s, 0.3, 1.2, 5.8, 0.35, C_DBLU)
-        tb(s, "Observation", 0.45, 1.22, 2.5, 0.3, size=11, bold=True, color=C_WHT)
-        rect(s, 0.3, 1.55, 5.8, 2.1, RGBColor(0x1E,0x3A,0x6B))
-        tb(s, str(observation)[:400], 0.45, 1.6, 5.5, 2.0, size=9, color=C_WHT, wrap=True)
-        # Recommendation box (purple)
-        rect(s, 0.3, 3.75, 5.8, 0.35, C_PURP)
-        tb(s, "Recommendation", 0.45, 3.77, 3.0, 0.3, size=11, bold=True, color=C_WHT)
-        rect(s, 0.3, 4.1, 5.8, 2.3, RGBColor(0x90,0x40,0xB0))
-        tb(s, str(recommendation)[:400], 0.45, 4.15, 5.5, 2.2, size=9, color=C_WHT, wrap=True)
-        # Evidence panel (right side)
-        if evidence_text:
-            rect(s, 6.5, 1.2, 6.5, 5.5, RGBColor(0xF5,0xF0,0xD0))
-            tb(s, evidence_text[:600], 6.65, 1.3, 6.2, 5.2, size=8, color=C_BLK, wrap=True)
-        return s
+        # Property details badge (black pill)
+        add_badge(s, "Property details", 0.50, 1.30, 2.00, 0.35, C_BLACK, C_WHITE, 12)
 
-    # ── Helper: get result value ───────────────────────────────────────────
-    def g(sec, chk):
-        return next((str(e.get("Result","—")) for e in audit_data.get(sec,[]) if e.get("Check")==chk), "—")
+        prop_rows = [
+            ("Property name",      g("Property Details","Display Name")),
+            ("Property ID",        g("Property Details","Property ID")),
+            ("Reporting time zone",g("Property Details","Time Zone")),
+            ("Industry Category",  "[To be confirmed]"),
+            ("Currency displayed as", g("Property Details","Currency")),
+        ]
+        for i,(k,v) in enumerate(prop_rows):
+            y = 1.75 + i*0.38
+            add_rect_shape(s, 0.50, y, 2.50, 0.38, C_BLUE_LIGHT, C_BLACK, 0.5)
+            add_rect_shape(s, 3.00, y, 4.50, 0.38, C_WHITE, C_BLACK, 0.5)
+            add_tb(s, k, 0.55, y+0.05, 2.40, 0.28, size=11, color=C_BLACK)
+            add_tb(s, str(v)[:60], 3.05, y+0.05, 4.40, 0.28, size=11, color=C_BLACK)
 
-    def is_ok(val):
-        s = str(val)
-        return "✅" in s or s in ("0","None","No duplicates found")
+        # Stream details badge
+        add_badge(s, "Stream details", 0.50, 4.00, 2.00, 0.35, C_BLACK, C_WHITE, 12)
 
-    # ── Build audit summary items ──────────────────────────────────────────
-    audit_overview = []
-    # Property
-    tz  = g("Property Details","Time Zone")
-    cur = g("Property Details","Currency")
-    ret = g("Property Details","Retention Period")
-    if ret and "2 Month" not in ret and "Months 2" not in ret:
-        audit_overview.append(("Data Retention", "Retention set to maximum duration.", "Pass", C_GRNA))
-    else:
-        audit_overview.append(("Data Retention", "Review data retention settings.", "Medium", C_ORAN))
+        streams = audit_data.get("Streams Configuration",[])
+        stream_rows = [
+            ("Stream name",    streams[0].get("Result","[To be confirmed]") if streams else "[To be confirmed]"),
+            ("Stream ID",      g("Property Details","Stream ID","[To be confirmed]")),
+            ("Stream URL",     "[To be confirmed]"),
+            ("Measurement ID", "[To be confirmed]"),
+        ]
+        for i,(k,v) in enumerate(stream_rows):
+            y = 4.45 + i*0.38
+            add_rect_shape(s, 0.50, y, 2.50, 0.38, C_BLUE_LIGHT, C_BLACK, 0.5)
+            add_rect_shape(s, 3.00, y, 4.50, 0.38, C_WHITE, C_BLACK, 0.5)
+            add_tb(s, k, 0.55, y+0.05, 2.40, 0.28, size=11, color=C_BLACK)
+            add_tb(s, str(v)[:60], 3.05, y+0.05, 4.40, 0.28, size=11, color=C_BLACK)
+
+        # Right panel (light blue rounded rect with summary)
+        add_rect_shape(s, 8.50, 2.00, 4.30, 3.50, C_BLUE_LIGHT, C_BLACK, 0.75, 'roundRect')
+        svc   = g("Property Details","Service Level","Standard")
+        ret   = g("Property Details","Retention Period","Two Months")
+        add_tb(s, f"Service Level: {svc}\nRetention: {ret}\nUser data ack: ✓",
+               8.60, 3.20, 4.10, 1.00, size=13, color=C_BLACK, align=PP_ALIGN.CENTER)
+
+        bottom_line(s); page_number(s, 2)
+
+    def make_overview_table(rows, title, page_num):
+        s = prs.slides.add_slide(blank)
+        set_bg(s, C_BG)
+        # Title
+        add_tb(s, title, 0.50, 0.40, 9.00, 0.70, size=28, bold=True, italic=True, color=C_BLACK)
+        # Legend badges top right
+        add_badge(s, "Pass",           8.60, 0.55, 1.30, 0.30, C_GREEN, C_WHITE, 12)
+        add_badge(s, "TBD /\nEvaluate",10.00, 0.52, 1.30, 0.36, C_AMBER, C_BLACK, 10)
+        add_badge(s, "Action\nrequired",11.40, 0.52, 1.40, 0.36, C_RED,   C_WHITE, 10)
+        # Table header — black row
+        add_rect_shape(s, 0.50, 1.40, 2.50, 0.40, C_BLACK)
+        add_rect_shape(s, 3.00, 1.40, 7.20, 0.40, C_BLACK)
+        add_rect_shape(s, 10.20, 1.40, 2.60, 0.40, C_BLACK)
+        add_tb(s, "  Audited Section",           0.50, 1.43, 2.50, 0.34, size=12, bold=True, color=C_WHITE)
+        add_tb(s, "  Comments | Recommendations",3.00, 1.43, 7.20, 0.34, size=12, bold=True, color=C_WHITE)
+        add_tb(s, "  Status",                    10.20, 1.43, 2.60, 0.34, size=12, bold=True, color=C_WHITE)
+        # Data rows
+        for i,(section, comment, (badge_txt, badge_col, badge_tc)) in enumerate(rows):
+            y = 1.80 + i*0.45
+            add_rect_shape(s, 0.50,  y, 2.50, 0.45, C_WHITE, C_BLACK, 0.25)
+            add_rect_shape(s, 3.00,  y, 7.20, 0.45, C_WHITE, C_BLACK, 0.25)
+            add_rect_shape(s, 10.20, y, 2.60, 0.45, C_WHITE, C_BLACK, 0.25)
+            add_tb(s, section,   0.55,  y+0.07, 2.40, 0.32, size=10, color=C_BLACK)
+            add_tb(s, str(comment)[:120], 3.05, y+0.05, 7.10, 0.35, size=10, color=C_BLACK)
+            add_badge(s, badge_txt, 10.70, y+0.065, 1.60, 0.32, badge_col, badge_tc, 12)
+        bottom_line(s); page_number(s, page_num)
+
+    def make_section_divider(title, subtitle="Observations & Recommendations"):
+        s = prs.slides.add_slide(blank)
+        set_bg(s, C_BLUE_SEC)
+        # Short black dash above title (connector)
+        add_connector(s, 2.00, 2.80, 3.00, 2.80)
+        # Title — large bold italic black
+        add_tb(s, title, 2.00, 2.90, 9.50, 1.30, size=48, bold=True, italic=True, color=C_BLACK)
+        # Subtitle
+        add_tb(s, subtitle, 2.00, 4.20, 9.50, 0.40, size=14, color=C_BLACK)
+        # Bottom line
+        add_connector(s, 2.00, 5.30, 11.30, 5.30)
+
+    def make_finding_slide(title, observation, recommendation, impact,
+                           badge_text, badge_color, badge_tc=C_WHITE,
+                           evidence_text="", note_text="", page_num=0):
+        s = prs.slides.add_slide(blank)
+        set_bg(s, C_BG)
+        # Title (bold, non-italic)
+        add_tb(s, title, 0.50, 0.45, 9.00, 0.75, size=28, bold=True, color=C_BLACK)
+        # Short underline below title
+        add_rect_shape(s, 0.50, 1.25, 2.00, 0.06, C_BLACK)
+        # Status badge top right
+        add_badge(s, badge_text, 11.40, 0.30, 1.70, 0.40, badge_color, badge_tc, 12)
+
+        # Three boxes: Observation, Recommendation, Impact
+        boxes = [
+            ("Observation",   str(observation)[:350],  1.50),
+            ("Recommendation",str(recommendation)[:350], 3.20),
+            ("Impact",        str(impact)[:250],        5.20),
+        ]
+        for (box_title, box_text, by) in boxes:
+            bh = 1.55 if box_title != "Impact" else 1.70
+            add_rect_shape(s, 0.50, by, 6.20, bh, C_WHITE, C_BLACK, 0.75, 'roundRect')
+            add_tb(s, box_title, 0.65, by+0.05, 5.90, 0.38, size=13, bold=True, color=C_BLACK)
+            add_tb(s, box_text,  0.65, by+0.43, 5.90, bh-0.50, size=10.5, color=C_BLACK, wrap=True)
+
+        # Right: screenshot placeholder (light blue rounded rect)
+        add_rect_shape(s, 7.00, 1.50, 5.80, 4.20, C_BLUE_LIGHT, C_BLACK, 0.75, 'roundRect')
+        add_tb(s, evidence_text if evidence_text else "[Screenshot placeholder]",
+               7.10, 3.10, 5.60, 0.70, size=13, italic=True, color=C_BLACK, align=PP_ALIGN.CENTER)
+
+        # Note box below screenshot if provided
+        if note_text:
+            add_rect_shape(s, 7.00, 6.00, 5.80, 0.70, C_YELLOW_NT, C_BLACK, 0.75, 'roundRect')
+            add_tb(s, note_text, 7.10, 6.05, 5.60, 0.60, size=10, color=C_BLACK)
+
+        bottom_line(s); page_number(s, page_num)
+
+    def make_conclusion_slide(page_num):
+        s = prs.slides.add_slide(blank)
+        set_bg(s, C_BG)
+        add_tb(s, "Overall Conclusion", 0.50, 0.40, 9.00, 0.70, size=28, bold=True, italic=True, color=C_BLACK)
+        add_rect_shape(s, 0.50, 1.25, 2.00, 0.06, C_BLACK)
+
+        high_items   = [(r[0],r[1]) for r in (overview_rows+overview_rows2) if r[2][0] in ("Fail","High")]
+        medium_items = [(r[0],r[1]) for r in (overview_rows+overview_rows2) if r[2][0] == "TBD"]
+        pass_items   = [(r[0],r[1]) for r in (overview_rows+overview_rows2) if r[2][0] == "Pass"]
+
+        add_tb(s, f"Audit completed for {prop_name}. "
+               f"{len(high_items)} action-required item(s), "
+               f"{len(medium_items)} TBD item(s), "
+               f"{len(pass_items)} pass(es).",
+               0.50, 1.45, 12.0, 0.60, size=11, color=C_BLACK, wrap=True)
+
+        # High priority (left column)
+        add_badge(s, "Action Required", 0.50, 2.15, 3.00, 0.35, C_RED, C_WHITE, 11)
+        for i,(sec,com) in enumerate(high_items[:6]):
+            y = 2.60 + i * 0.65
+            add_rect_shape(s, 0.50, y, 5.70, 0.60, C_WHITE, C_BLACK, 0.5, 'roundRect')
+            add_tb(s, f"• {sec}", 0.65, y+0.03, 5.40, 0.22, size=10, bold=True, color=C_BLACK)
+            add_tb(s, str(com)[:90], 0.65, y+0.28, 5.40, 0.28, size=9, color=C_BLACK, wrap=True)
+
+        # TBD / medium priority (right column)
+        add_badge(s, "TBD / Evaluate", 6.50, 2.15, 3.00, 0.35, C_AMBER, C_BLACK, 11)
+        for i,(sec,com) in enumerate(medium_items[:6]):
+            y = 2.60 + i * 0.65
+            add_rect_shape(s, 6.50, y, 5.70, 0.60, C_WHITE, C_BLACK, 0.5, 'roundRect')
+            add_tb(s, f"• {sec}", 6.65, y+0.03, 5.40, 0.22, size=10, bold=True, color=C_BLACK)
+            add_tb(s, str(com)[:90], 6.65, y+0.28, 5.40, 0.28, size=9, color=C_BLACK, wrap=True)
+
+        bottom_line(s); page_number(s, page_num)
+
+    def make_thank_you():
+        s = prs.slides.add_slide(blank)
+        set_bg(s, C_BG)
+        # "Thank you" bold italic
+        add_tb(s, "Thank\nyou", 0.80, 2.80, 8.00, 2.00, size=72, bold=True, italic=True, color=C_BLACK)
+        # Client circle (top right)
+        add_rect_shape(s, 10.00, 1.50, 2.00, 2.00, C_WHITE, C_BLACK, 0.75, 'ellipse')
+        add_tb(s, prop_name[:20], 10.00, 2.20, 2.00, 0.60, size=16, bold=True, color=C_BLACK, align=PP_ALIGN.CENTER)
+        # Connector
+        add_connector(s, 11.00, 3.50, 11.00, 4.50)
+        # Brainlabs circle (bottom right)
+        add_rect_shape(s, 10.00, 4.50, 2.00, 2.00, C_WHITE, C_BLACK, 0.75, 'ellipse')
+        add_tb(s, "brainlabs", 10.00, 5.20, 2.00, 0.60, size=16, bold=True, italic=True, color=C_BLACK, align=PP_ALIGN.CENTER)
+
+    # ── BUILD DECK ─────────────────────────────────────────────────────────
+    page = [1]
+    def np():
+        page[0] += 1
+        return page[0]
+
+    # Slide 1: Cover
+    make_cover()
+
+    # Slide 2: Property & Stream
+    make_property_stream()
+
+    # Slides 3-4: Audit Overview
+    make_overview_table(overview_rows,  "Audit overview",           3)
+    make_overview_table(overview_rows2, "Audit overview (continued)", 4)
+
+    # ── SECTION: GA4 CONFIGURATIONS ───────────────────────────────────────
+    make_section_divider("GA4 Configurations")
+
+    # Data Retention
+    ret_val = g("Property Details","Retention Period","Two Months")
+    ret_ok  = "14" in str(ret_val) or "50" in str(ret_val)
+    make_finding_slide(
+        "Data Retention",
+        f"Retention period for the GA4 property is currently set to {ret_val}. "
+        f"Default for new Standard properties is 2 months, but the maximum (14 months) is recommended to support year-on-year analysis and longer custom report windows.",
+        "Raise both Event data and User data retention to 14 months — the maximum available on the Standard tier. Toggle 'Reset on new user activity' on so the clock resets each time a user returns. Note: changes take effect after 24 hours.",
+        "A 14-month window restores year-on-year comparison capability, audience seed sizes for remarketing, and accurate user-property carry-over. Two months hard-caps custom reporting at roughly 60 days.",
+        badge_text="Pass" if ret_ok else "High",
+        badge_color=C_GREEN if ret_ok else C_RED,
+        badge_tc=C_WHITE,
+        note_text=f"Retention currently set to '{ret_val}'",
+        page_num=6
+    )
+
+    # Consent Management
+    make_finding_slide(
+        "Consent Management",
+        "Consent Management configuration is not visible in the dashboard export. With GA4 properties operating under GDPR / DPDP-equivalent regimes, Consent Mode v2 binding is required to legally collect ads and analytics signals.",
+        "Confirm whether a CMP (e.g. Cookiebot, OneTrust) is implemented. Verify Consent Mode v2 default and update calls are firing through GTM, and that all marketing tags (Google and non-Google) are bound to the correct consent signals.",
+        "Without proper Consent Mode v2, behavioural modelling for unconsented users is not available, GA4 loses signal in cookieless regions, and the property is exposed to compliance risk under GDPR / DPDP.",
+        badge_text="Need to be discussed", badge_color=C_AMBER, badge_tc=C_BLACK,
+        page_num=7
+    )
+
+    # Google Signals
+    make_finding_slide(
+        "Google Signals",
+        "User Data Collection acknowledgement is in place. The Google Signals toggle itself is not directly visible in the dashboard.",
+        "Confirm Google Signals data collection is enabled on the data stream so cross-device and Ads-personalisation features remain available. If it has been disabled deliberately, document the reason.",
+        "Google Signals powers cross-device user counts, audience export to Google Ads, and Ads-personalisation. Disabling it removes cross-device reporting and limits remarketing reach.",
+        badge_text="Need to be discussed", badge_color=C_AMBER, badge_tc=C_BLACK,
+        page_num=8
+    )
 
     # PII
-    pii_issues = [e for e in audit_data.get("PII Check",[]) if "❌" in str(e.get("Result",""))]
-    if pii_issues:
-        audit_overview.append(("PII", f"{len(pii_issues)} PII issue(s) found in page paths.", "High", C_RED))
-    else:
-        audit_overview.append(("PII", "No PII detected in page paths or URLs.", "Pass", C_GRNA))
-
-    # Transactions
-    dup_count_raw = g("Transactions","Duplicate Transaction Count")
-    try:
-        dup_count = int(str(dup_count_raw).replace(",",""))
-    except: dup_count = 0
-    if dup_count > 0:
-        audit_overview.append(("Duplicate Transactions", f"{dup_count} duplicate transaction IDs found.", "High", C_RED))
-    else:
-        audit_overview.append(("Transactions", "No duplicate transactions detected.", "Pass", C_GRNA))
-
-    # Landing page
-    lp_pct_raw = g("Landing Page Analysis","Landing Page (not set) %")
-    try:
-        lp_pct = float(str(lp_pct_raw).replace("%",""))
-    except: lp_pct = 0.0
-    if lp_pct > 10:
-        audit_overview.append(("Landing Page (not set)", f"{lp_pct_raw} of sessions have no landing page. Review session_start.", "Medium", C_ORAN))
-    else:
-        audit_overview.append(("Landing Pages", f"Landing page capture rate healthy ({lp_pct_raw} not set).", "Pass", C_GRNA))
-
-    # Unassigned traffic
-    ua_pct_raw = g("Channel Grouping Analysis","Unassigned %")
-    try:
-        ua_pct = float(str(ua_pct_raw).replace("%",""))
-    except: ua_pct = 0.0
-    if ua_pct > 10:
-        audit_overview.append(("Unassigned Traffic", f"{ua_pct_raw} unassigned. Review UTM parameters and Channel Grouping rules.", "Medium", C_ORAN))
-    else:
-        audit_overview.append(("Channel Grouping", f"Unassigned traffic within threshold ({ua_pct_raw}).", "Pass", C_GRNA))
-
-    # Custom dims
-    event_dims  = audit_data.get("Custom Dimensions - Event Scoped", [])
-    user_dims   = audit_data.get("Custom Dimensions - User Scoped", [])
-    item_dims   = audit_data.get("Custom Dimensions - Item Scoped", [])
-    total_dims  = len(event_dims) + len(user_dims) + len(item_dims)
-    if total_dims == 0:
-        audit_overview.append(("Custom Dimensions", "No custom dimensions configured.", "Medium", C_ORAN))
-    else:
-        audit_overview.append(("Custom Dimensions", f"{total_dims} custom dimension(s) configured.", "Pass", C_GRNA))
-
-    # Key events
-    ke_list = audit_data.get("Key Event Details",[])
-    if len(ke_list) < 2:
-        audit_overview.append(("Key Events", "Only default key events found. Consider expanding.", "Medium", C_ORAN))
-    else:
-        audit_overview.append(("Key Events", f"{len(ke_list)} key event(s) configured.", "Pass", C_GRNA))
-
-    # ── SLIDE 1: COVER ─────────────────────────────────────────────────────
-    cover = prs.slides.add_slide(blank)
-    cover.background.fill.solid(); cover.background.fill.fore_color.rgb = C_WHT
-    # Left: circles with logo + prop name connected by line
-    rect(cover, 1.0, 1.2, 0.08, 3.5, C_BLK)   # vertical connector line
-    # Property circle (top)
-    rect(cover, 0.5, 0.5, 1.8, 1.6, C_OFFWHT)
-    tb(cover, prop_name[:20], 0.55, 0.8, 1.7, 0.7, size=11, bold=True, color=C_BLK, align=PP_ALIGN.CENTER)
-    # Brainlabs circle (bottom)
-    rect(cover, 0.5, 2.9, 1.8, 1.8, C_OFFWHT)
-    rect(cover, 0.75, 3.0, 1.3, 0.78, C_YLW)
-    tb(cover, "BL", 0.75, 3.0, 1.3, 0.78, size=18, bold=True, color=C_BLK, align=PP_ALIGN.CENTER)
-    tb(cover, "brainlabs", 0.65, 3.85, 1.5, 0.55, size=11, bold=True, italic=True, color=C_BLK, align=PP_ALIGN.CENTER)
-    # Right: title
-    rect(cover, 3.0, 1.0, 3.5, 0.42, C_BLK)
-    tb(cover, f"  {date_range}  ", 3.0, 1.0, 3.5, 0.42, size=11, bold=True, color=C_WHT, align=PP_ALIGN.CENTER)
-    tb(cover, f"{prop_name}", 3.0, 1.7, 9.5, 2.0, size=44, bold=True, color=C_BLK)
-    tb(cover, "GA4 Audit", 3.0, 3.6, 6.0, 1.0, size=44, bold=True, color=C_BLK)
-    section_line(cover)
-
-    # ── SLIDE 2: PROPERTY & STREAM DETAILS ────────────────────────────────
-    prop_s = content_slide_frame("Property & Stream Details")
-    # Property details table header
-    rect(prop_s, 0.4, 1.3, 5.5, 0.38, C_DBLU)
-    tb(prop_s, "  Property details", 0.4, 1.3, 5.5, 0.38, size=10, bold=True, color=C_WHT)
-    prop_rows = [
-        ("Property name",   g("Property Details","Display Name")),
-        ("Time Zone",       g("Property Details","Time Zone")),
-        ("Currency",        g("Property Details","Currency")),
-        ("Service Level",   g("Property Details","Service Level")),
-        ("Retention Period",g("Property Details","Retention Period")),
-    ]
-    for ri, (k, v) in enumerate(prop_rows):
-        bg = C_LBLU if ri % 2 == 0 else C_WHT
-        rect(prop_s, 0.4, 1.68 + ri*0.36, 2.2, 0.35, bg)
-        rect(prop_s, 2.6, 1.68 + ri*0.36, 3.3, 0.35, C_WHT)
-        tb(prop_s, k, 0.45, 1.7 + ri*0.36, 2.1, 0.3, size=9, bold=True, color=C_DBLU)
-        tb(prop_s, str(v)[:50], 2.65, 1.7 + ri*0.36, 3.2, 0.3, size=9, color=C_BLK)
-    # Stream details
-    streams = audit_data.get("Streams Configuration",[])
-    rect(prop_s, 0.4, 3.6, 5.5, 0.38, C_DBLU)
-    tb(prop_s, "  Stream details", 0.4, 3.6, 5.5, 0.38, size=10, bold=True, color=C_WHT)
-    for ri, e in enumerate(streams[:4]):
-        bg = C_LBLU if ri % 2 == 0 else C_WHT
-        rect(prop_s, 0.4, 3.98 + ri*0.36, 2.2, 0.35, bg)
-        rect(prop_s, 2.6, 3.98 + ri*0.36, 3.3, 0.35, C_WHT)
-        tb(prop_s, str(e.get("Check",""))[:30], 0.45, 4.0 + ri*0.36, 2.1, 0.3, size=9, bold=True, color=C_DBLU)
-        tb(prop_s, str(e.get("Result",""))[:50], 2.65, 4.0 + ri*0.36, 3.2, 0.3, size=9, color=C_BLK)
-
-    # ── SLIDE 3: AUDIT OVERVIEW TABLE ──────────────────────────────────────
-    ov_s = content_slide_frame("Audit Overview")
-    # Status icons legend top-right
-    for ci, (label, col) in enumerate([("Pass",C_GRNA),("Medium",C_ORAN),("High/Fail",C_RED)]):
-        rect(ov_s, 10.2 + ci*0.85, 0.25, 0.7, 0.28, col)
-        tb(ov_s, label, 10.2 + ci*0.85, 0.25, 0.7, 0.28, size=7, bold=True, color=C_WHT, align=PP_ALIGN.CENTER)
-    # Table header
-    rect(ov_s, 0.3, 1.1, 3.0, 0.38, C_DBLU)
-    rect(ov_s, 3.3, 1.1, 8.0, 0.38, C_DBLU)
-    rect(ov_s, 11.3, 1.1, 1.7, 0.38, C_DBLU)
-    tb(ov_s, "  Audited Section", 0.3, 1.12, 3.0, 0.35, size=9, bold=True, color=C_WHT)
-    tb(ov_s, "  Comments | Recommendations", 3.3, 1.12, 8.0, 0.35, size=9, bold=True, color=C_WHT)
-    tb(ov_s, "Status", 11.3, 1.12, 1.7, 0.35, size=9, bold=True, color=C_WHT, align=PP_ALIGN.CENTER)
-    for ri, (section, comment, badge, col) in enumerate(audit_overview[:10]):
-        y = 1.48 + ri * 0.46
-        bg = C_LBLU if ri % 2 == 0 else C_WHT
-        rect(ov_s, 0.3, y, 3.0, 0.44, bg)
-        rect(ov_s, 3.3, y, 8.0, 0.44, bg)
-        rect(ov_s, 11.3, y, 1.7, 0.44, bg)
-        tb(ov_s, section, 0.35, y+0.06, 2.9, 0.35, size=9, bold=True, color=C_DBLU)
-        tb(ov_s, comment, 3.35, y+0.06, 7.9, 0.35, size=8, color=C_BLK)
-        rect(ov_s, 11.55, y+0.07, 1.2, 0.28, col)
-        tb(ov_s, badge, 11.55, y+0.07, 1.2, 0.28, size=7, bold=True, color=C_WHT, align=PP_ALIGN.CENTER)
-
-    # ── SECTION: PROPERTY CONFIGURATION ───────────────────────────────────
-    section_divider("Property Configuration", "Settings · Streams · Limits", bg=RGBColor(0x87,0xCE,0xFA))
-
-    # Property details finding
-    prop_detail_entries = audit_data.get("Property Details",[])
-    obs_text = "Property configuration was reviewed. Key settings: " + " | ".join(
-        f"{e.get('Check','')}: {str(e.get('Result',''))[:40]}" for e in prop_detail_entries[:5]
-    )
-    obs_rec_slide(
-        "Property & Stream Configuration",
-        obs_text,
-        "Verify that Time Zone matches your primary reporting market. Currency should align with your eCommerce setup. Ensure User Data Collection Acknowledgment is confirmed.",
-        "Pass" if all(is_ok(e.get("Result","")) for e in prop_detail_entries) else "Medium",
-        C_GRNA if all(is_ok(e.get("Result","")) for e in prop_detail_entries) else C_ORAN,
-        "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))[:60]}" for e in prop_detail_entries[:8]])
-    )
-
-    # GA4 Property Limits
-    limits = audit_data.get("GA4 Property Limits",[])
-    obs_rec_slide(
-        "GA4 Property Limits",
-        "Property limits were checked for Custom Dimensions, Metrics, Key Events, and Audiences. " +
-        " | ".join(f"{e.get('Check','')}: {str(e.get('Result',''))}" for e in limits[:4]),
-        "Monitor usage against your tier limits. Unused custom dimensions should be archived to free up capacity.",
-        "Pass", C_GRNA,
-        "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))}" for e in limits])
+    pii_note = "No PII detected in page paths or event parameters." if not pii_issues else f"{len(pii_issues)} PII issue(s) found."
+    make_finding_slide(
+        "PII Check",
+        f"PII scan completed. {pii_note} UTM parameters, click IDs (gclid, fbclid), and GA4-redacted values were excluded from the scan.",
+        "Ensure no user data such as email addresses, phone numbers, or user IDs are passed in URL parameters or event parameters. Enable GA4 Data Redaction as an additional safeguard.",
+        "Collecting PII in GA4 violates Google's terms of service and exposes the business to GDPR/DPDP compliance risk. Clean data protects both users and the business.",
+        badge_text="Pass" if not pii_issues else "Fail",
+        badge_color=C_GREEN if not pii_issues else C_RED,
+        note_text="PII scan returned no issues. UTMs and click IDs excluded." if not pii_issues else pii_note,
+        page_num=9
     )
 
     # ── SECTION: DATA QUALITY ──────────────────────────────────────────────
-    section_divider("Data Quality", "PII · Transactions · E-commerce", bg=RGBColor(0xFF, 0xB6, 0xC1))
+    make_section_divider("GA4 Data Quality")
 
-    # PII
-    pii_entries = audit_data.get("PII Check",[])
-    pii_obs = f"{len(pii_issues)} PII issue(s) found." if pii_issues else "No PII detected in pagePath or pageLocation."
-    obs_rec_slide(
-        "Personal Identifiable Information (PII)",
-        pii_obs + " PII scanning covers emails, phone numbers, and user identifiers in URL parameters.",
-        "Ensure no user data such as email addresses, phone numbers, or user IDs are passed in URL parameters. Enable GA4 Data Redaction as an additional safeguard.",
-        "High" if pii_issues else "Pass",
-        C_RED if pii_issues else C_GRNA,
-        "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))[:80]}" for e in pii_entries[:8]])
+    # Custom Dimensions
+    make_finding_slide(
+        "Custom Definitions",
+        f"{total_dims} custom dimension(s) currently configured ({len(event_dims)} event-scoped, {len(user_dims)} user-scoped, {len(item_dims)} item-scoped). "
+        + ("Opportunity for richer analysis through additional custom dimensions." if total_dims < 5 else "Custom dimensions are in place."),
+        "Introduce user-level dimensions such as login_status and user_type, along with event-level dimensions for content categorisation. Ensure parameter names match your dataLayer exactly.",
+        "Custom dimensions and metrics enable segmentation and analysis beyond GA4 defaults. They are critical for understanding user behaviour specific to your business model.",
+        badge_text="Pass" if total_dims >= 5 else "Fail",
+        badge_color=C_GREEN if total_dims >= 5 else C_RED,
+        note_text=f"{total_dims} custom dimension(s) configured" if total_dims > 0 else "Zero custom dimensions configured",
+        page_num=10
+    )
+
+    # Key Events
+    make_finding_slide(
+        "Key Events",
+        f"{len(ke_list)} key event(s) configured: {', '.join([e.get('Check','') for e in ke_list[:6]])}." if ke_list else "No key events configured beyond defaults.",
+        "Review all business-critical user actions and mark as key events. Recommended: form_submit, newsletter_signup, add_to_cart, begin_checkout, purchase. Consider micro-conversions too.",
+        "Key events drive conversion reporting, Smart Bidding signals in Google Ads, and audience qualification. Sparse key event configuration limits the ability to optimise for business outcomes.",
+        badge_text="Pass" if len(ke_list) >= 3 else "Fail",
+        badge_color=C_GREEN if len(ke_list) >= 3 else C_RED,
+        note_text=f"{len(ke_list)} key event(s) configured" if ke_list else "Only default events found",
+        page_num=11
     )
 
     # Transactions
-    txn_entries = audit_data.get("Transactions",[])
-    dup_txns = audit_data.get("Duplicate Transactions",[])
-    obs_rec_slide(
-        "Transaction Health & Duplicate Detection",
-        f"Transaction audit: {g('Transactions','Total Unique transactionId')} unique transaction IDs found. "
-        f"Duplicate count: {dup_count_raw}. " +
-        ("Duplicates detected — likely caused by multiple purchase event fires or missing deduplication logic." if dup_count > 0 else "No duplicate transactions found."),
-        "Review purchase event setup to ensure it fires only once per order. Verify transaction_id is unique per purchase and not re-triggered on page refresh. Test via GA4 DebugView.",
-        "High" if dup_count > 0 else "Pass",
-        C_RED if dup_count > 0 else C_GRNA,
-        "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))[:80]}" for e in txn_entries[:8]])
+    make_finding_slide(
+        "Transaction Health",
+        f"Transaction audit completed. Duplicate transaction IDs found: {dup_count}. "
+        + ("No duplicate transactions detected. Revenue and item data appear clean." if dup_count == 0 else "Duplicate transactions inflate revenue and conversion metrics."),
+        "Ensure purchase events fire only once per order. Verify transaction_id is unique per purchase and not re-triggered on page refresh or back-navigation. Test via GA4 DebugView.",
+        "Duplicate transactions directly inflate purchase counts, revenue, and ROAS figures. Accurate transaction data is essential for eCommerce optimisation and budget decisions.",
+        badge_text="Pass" if dup_count == 0 else "Fail",
+        badge_color=C_GREEN if dup_count == 0 else C_RED,
+        note_text=f"Duplicate transactions found: {dup_count}" if dup_count > 0 else "All transaction checks clean",
+        page_num=12
     )
 
     # ── SECTION: EVENTS ────────────────────────────────────────────────────
-    section_divider("Events & Key Events", "Event Inventory · Conversions", bg=RGBColor(0xFF, 0xDD, 0x33))
+    make_section_divider("Events & Key Events")
 
-    # Event inventory
-    events = audit_data.get("GA4 Events",[])
-    obs_rec_slide(
+    # Event Inventory
+    event_names = ", ".join([e.get("Check","") for e in events[:8]])
+    make_finding_slide(
         "Event Inventory",
-        f"{len(events)} events tracked in the selected date range. Top events: " +
-        ", ".join([e.get("Check","") for e in events[:8]]),
-        "Ensure all key user interactions are tracked as events. Review naming conventions — all event names should be snake_case. Consider adding micro-conversions (form_submit, cta_click, scroll_depth).",
-        "Pass" if len(events) > 5 else "Medium",
-        C_GRNA if len(events) > 5 else C_ORAN,
-        "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))}" for e in events[:15]])
+        f"{len(events)} events tracked in the audit date range. "
+        + (f"Top events: {event_names}." if event_names else "No events found in the selected date range."),
+        "Verify all key user interactions are tracked as GA4 events. Naming should be snake_case. Ensure auto-collected events (page_view, scroll, click) are enabled in the stream. Add custom events for business-specific interactions.",
+        "Comprehensive event tracking is the foundation of GA4 reporting. Missing events create blind spots in user behaviour analysis, funnel analysis, and audience building.",
+        badge_text="Pass" if len(events) > 5 else "TBD",
+        badge_color=C_GREEN if len(events) > 5 else C_AMBER,
+        badge_tc=C_WHITE if len(events) > 5 else C_BLACK,
+        note_text=f"{len(events)} events tracked in selected date range",
+        page_num=13
     )
-
-    # Key events
-    obs_rec_slide(
-        "Key Events (Conversions)",
-        f"{len(ke_list)} key event(s) configured: {', '.join([e.get('Check','') for e in ke_list[:8]])}.",
-        "Ensure all business-critical events are marked as key events. Recommended additions: form submissions, newsletter signups, add_to_cart, begin_checkout, purchase.",
-        "Pass" if len(ke_list) >= 3 else "Medium",
-        C_GRNA if len(ke_list) >= 3 else C_ORAN,
-        "\n".join([f"{e.get('Check','')}: Created {e.get('Result',{}).get('Create Time','—')} | {e.get('Result',{}).get('Counting Method','—')}" for e in ke_list[:10]])
-    )
-
-    # ── SECTION: CUSTOM DIMENSIONS ─────────────────────────────────────────
-    section_divider("Custom Dimensions", "Event · User · Item scoped", bg=RGBColor(0x87,0xCE,0xFA))
-
-    for scope, dims in [("Event Scoped", event_dims), ("User Scoped", user_dims), ("Item Scoped", item_dims)]:
-        if dims:
-            obs_rec_slide(
-                f"Custom Dimensions — {scope}",
-                f"{len(dims)} {scope.lower()} custom dimension(s) configured: {', '.join([d.get('Check','') for d in dims[:6]])}.",
-                f"Review {scope.lower()} custom dimensions for relevance. Archive unused dimensions to free capacity. Ensure parameter names match exactly what is sent in the data layer.",
-                "Pass", C_GRNA,
-                "\n".join([f"{d.get('Check','')}: param={d.get('Result',{}).get('Parameter Name','—')}" for d in dims[:10]])
-            )
-
-    if not event_dims and not user_dims and not item_dims:
-        obs_rec_slide(
-            "Custom Dimensions",
-            "No custom dimensions are configured for this property.",
-            "Implement custom dimensions to capture data beyond standard GA4 dimensions. Common additions: login_status, user_type, page_category, content_group.",
-            "Medium", C_ORAN, ""
-        )
 
     # ── SECTION: TRAFFIC QUALITY ───────────────────────────────────────────
-    section_divider("Traffic Quality", "Landing Pages · Channel Grouping · Unassigned", bg=RGBColor(0xFF, 0xB6, 0xC1))
+    make_section_divider("Traffic Quality")
 
-    # Landing page
-    obs_rec_slide(
+    # Landing Page
+    make_finding_slide(
         "Landing Page Analysis",
-        f"Total sessions: {g('Landing Page Analysis','Total Sessions')}. "
-        f"Landing Page (not set): {g('Landing Page Analysis','Landing Page (not set) Sessions')} sessions ({lp_pct_raw}). "
-        + ("Rate exceeds 10% threshold — session_start event may not be firing correctly." if lp_pct > 10 else "Rate is within acceptable range."),
-        "Review session_start event implementation. Ensure it fires on the first page of every session. Check for SPA (Single Page Application) issues that may prevent session attribution.",
-        "Medium" if lp_pct > 10 else "Pass",
-        C_ORAN if lp_pct > 10 else C_GRNA,
-        "\n".join([f"{e.get('Landing Page','')}: {e.get('Sessions','')} sessions" for e in audit_data.get("Landing Page Data",[])[:10]])
+        f"Landing Page (not set) rate: {lp_pct_raw}. "
+        + ("Rate is within acceptable range." if g_pct(lp_pct_raw) <= 10 else "Rate exceeds 10% — session_start may not be firing on all entry points."),
+        "Investigate pages where session_start is not firing. Common causes include SPAs without proper history-change tracking, iframes, and redirect chains that drop the referrer. Review GTM trigger configuration.",
+        "A high (not set) rate means landing page data is unreliable, degrading acquisition and content reporting. Fixing this restores visibility into where users first enter your site.",
+        badge_text="Pass" if g_pct(lp_pct_raw) <= 10 else "Fail",
+        badge_color=C_GREEN if g_pct(lp_pct_raw) <= 10 else C_RED,
+        note_text=f"Landing Page (not set): {lp_pct_raw}",
+        page_num=14
     )
 
-    # Unassigned traffic
-    obs_rec_slide(
-        "Channel Grouping & Unassigned Traffic",
+    # Unassigned Traffic
+    make_finding_slide(
+        "Unassigned Traffic",
         f"Unassigned traffic: {ua_pct_raw} of total sessions. "
-        + (f"Exceeds 10% threshold. Top sources: " + ", ".join([f"{e.get('Source','')}/{e.get('Medium','')}" for e in audit_data.get("Unassigned Source/Medium Data",[])[:4]]) if ua_pct > 10 else "Within acceptable threshold."),
-        "Review UTM parameter consistency across all campaigns. Configure Custom Channel Groups in GA4 to correctly attribute traffic from owned channels. Validate auto-tagging is enabled for Google Ads.",
-        "Medium" if ua_pct > 10 else "Pass",
-        C_ORAN if ua_pct > 10 else C_GRNA,
-        "\n".join([f"{e.get('Source','')}/{e.get('Medium','')}: {e.get('Sessions','')} sessions" for e in audit_data.get("Unassigned Source/Medium Data",[])[:10]])
+        + ("Within acceptable threshold." if g_pct(ua_pct_raw) <= 10 else "Exceeds threshold — UTMs or channel grouping rules need review."),
+        "Review UTM parameter consistency across all paid, email, and social campaigns. Configure Custom Channel Groups in GA4 to correctly attribute owned-channel traffic. Validate Google Ads auto-tagging.",
+        "Unassigned traffic creates attribution gaps in acquisition reporting, making it impossible to accurately measure which channels drive value. Fixing this improves ROAS calculations and budget allocation.",
+        badge_text="Pass" if g_pct(ua_pct_raw) <= 10 else "TBD",
+        badge_color=C_GREEN if g_pct(ua_pct_raw) <= 10 else C_AMBER,
+        badge_tc=C_WHITE if g_pct(ua_pct_raw) <= 10 else C_BLACK,
+        note_text=f"Unassigned sessions: {ua_pct_raw}",
+        page_num=15
     )
 
     # ── OVERALL CONCLUSION ─────────────────────────────────────────────────
-    section_divider("Overall Conclusion", "", bg=RGBColor(0x87,0xCE,0xFA))
+    make_conclusion_slide(16)
 
-    conc_s = content_slide_frame("Overall Conclusion")
-    high_issues   = [item for item in audit_overview if item[2] in ("High","Fail")]
-    medium_issues = [item for item in audit_overview if item[2] == "Medium"]
-    pass_items    = [item for item in audit_overview if item[2] == "Pass"]
-    tb(conc_s, f"OVERALL CONCLUSION", 0.5, 1.1, 12.0, 0.5, size=16, bold=True, color=C_BLK, align=PP_ALIGN.CENTER)
-    summary_text = (
-        f"Audit completed for {prop_name}. "
-        f"{len(high_issues)} high-priority issue(s), {len(medium_issues)} medium-priority item(s), {len(pass_items)} pass(es)."
-    )
-    tb(conc_s, summary_text, 0.5, 1.7, 12.3, 0.6, size=11, color=C_BLK, wrap=True)
-    if high_issues:
-        tb(conc_s, "High-Priority Issues", 0.5, 2.4, 5.5, 0.4, size=12, bold=True, color=C_RED)
-        for i, (sec, comment, badge, col) in enumerate(high_issues[:5]):
-            tb(conc_s, f"• {sec}: {comment}", 0.7, 2.85 + i*0.42, 5.3, 0.38, size=9, color=C_BLK, wrap=True)
-    if medium_issues:
-        tb(conc_s, "Medium-Priority Items", 6.8, 2.4, 5.5, 0.4, size=12, bold=True, color=C_ORAN)
-        for i, (sec, comment, badge, col) in enumerate(medium_issues[:5]):
-            tb(conc_s, f"• {sec}: {comment}", 7.0, 2.85 + i*0.42, 5.3, 0.38, size=9, color=C_BLK, wrap=True)
+    # ── THANK YOU ──────────────────────────────────────────────────────────
+    make_thank_you()
 
-    # ── THANK YOU SLIDE ────────────────────────────────────────────────────
-    ty = prs.slides.add_slide(blank)
-    ty.background.fill.solid(); ty.background.fill.fore_color.rgb = C_OFFWHT
-    # Connector line between circles
-    rect(ty, 9.9, 1.8, 0.08, 2.2, C_BLK)
-    # Property circle
-    rect(ty, 9.0, 0.5, 2.2, 1.8, C_WHT)
-    tb(ty, prop_name[:20], 9.1, 0.9, 2.0, 0.7, size=11, bold=True, color=C_DBLU, align=PP_ALIGN.CENTER)
-    # Brainlabs circle
-    rect(ty, 9.0, 3.5, 2.2, 2.0, C_WHT)
-    rect(ty, 9.3, 3.7, 1.6, 0.9, C_YLW)
-    tb(ty, "BL", 9.3, 3.7, 1.6, 0.9, size=16, bold=True, color=C_BLK, align=PP_ALIGN.CENTER)
-    tb(ty, "brainlabs", 9.2, 4.68, 1.8, 0.55, size=11, bold=True, italic=True, color=C_BLK, align=PP_ALIGN.CENTER)
-    # Thank you text
-    tb(ty, "Thank", 1.0, 1.5, 6.0, 1.4, size=72, bold=True, color=C_BLK)
-    tb(ty, "you", 1.0, 3.0, 5.0, 1.4, size=72, bold=True, color=C_BLK)
-    section_line(ty)
-
-    # ── Stream to response ─────────────────────────────────────────────────
+    # ── STREAM TO RESPONSE ─────────────────────────────────────────────────
     buf = io.BytesIO()
     prs.save(buf)
     buf.seek(0)
-    filename = f"GA4_Audit_BL_{prop_name.replace(' ','_')}.pptx"
+    filename = f"GA4_Audit_{prop_name.replace(' ','_')}.pptx"
     return StreamingResponse(
         buf,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
