@@ -1267,17 +1267,27 @@ def export_pptx_bl(request: Request, body: dict = None):
     }, prop_ctx)
 
     # ── AUDIT OVERVIEW TABLE — also AI-driven badge + comment ─────────────
+    def _ov_badge(val_str):
+        v = str(val_str)
+        if "✅" in v: return (C_GREEN, C_WHITE)
+        if "❌" in v: return (C_RED,   C_WHITE)
+        return (C_AMBER, C_BLACK)
+
+    def _ov_entry(section_key, check_key, fallback="Not checked"):
+        entry = next((e for e in audit_data.get(section_key,[]) if e.get("Check")==check_key), None)
+        return str(entry.get("Result", fallback)) if entry else fallback
+
+    # Overview rows now use REAL data from the new APIs
     overview_rows_1 = [
         ("Consent Management",    ai["consent"]["observation"][:120],     badge_settings(ai["consent"]["badge"])),
-        ("Google Signals",        ai["signals"]["observation"][:120],     badge_settings(ai["signals"]["badge"])),
+        ("Google Signals",        _ov_entry("Google Signals","State"),    _ov_badge(_ov_entry("Google Signals","State"))),
         ("Data Retention",        ai["retention"]["observation"][:120],   badge_settings(ai["retention"]["badge"])),
-        ("Data Filters / Internal traffic", "Filter state not in dashboard. Confirm internal traffic exclusion is Active.", (C_AMBER, C_BLACK)),
-        ("Cross-domain measurement", "Not visible. Confirm if cross-domain journeys exist.", (C_AMBER, C_BLACK)),
-        ("Session timeout",       "Not visible. Confirm defaults (30 min / 10 sec) are in place.", (C_AMBER, C_BLACK)),
-        ("Reporting Identity",    "Not visible. Confirm setting matches User-ID approach.",   (C_AMBER, C_BLACK)),
-        ("Attribution Settings",  "Not visible. Confirm Data-driven model with default look-back windows.", (C_AMBER, C_BLACK)),
-        ("Google Ads Link",       gv("Product Links","Google Ads","❌ Not linked")[:120], badge_settings("Pass" if "✅" in gv("Product Links","Google Ads","") else "Fail")),
-        ("Firebase Link",         gv("Product Links","Firebase","❌ Not linked")[:120], badge_settings("Pass" if "✅" in gv("Product Links","Firebase","") else "Need to be discussed")),
+        ("Data Filters / Internal traffic", "Filter state not in dashboard. Confirm internal traffic exclusion is Active, not Testing.", (C_AMBER, C_BLACK)),
+        ("Cross-domain measurement", "Not visible in dashboard. Confirm if cross-domain journeys exist and configure if required.", (C_AMBER, C_BLACK)),
+        ("Session timeout",       "Not visible in dashboard. Confirm defaults (30 min / 10 sec) are in place.", (C_AMBER, C_BLACK)),
+        ("Reporting Identity",    _ov_entry("Reporting Identity","Reporting Identity","⚠️ Not fetched"), _ov_badge(_ov_entry("Reporting Identity","Reporting Identity"))),
+        ("Attribution Settings",  _ov_entry("Attribution Settings","Reporting Attribution Model","⚠️ Not fetched"), _ov_badge(_ov_entry("Attribution Settings","Reporting Attribution Model"))),
+        ("User Provided Data",    _ov_entry("User Provided Data","Collection State","⚠️ Not fetched"), _ov_badge(_ov_entry("User Provided Data","Collection State"))),
         ("PII",                   ai["pii"]["observation"][:120],          badge_settings(ai["pii"]["badge"])),
     ]
     overview_rows_2 = [
@@ -1287,8 +1297,11 @@ def export_pptx_bl(request: Request, body: dict = None):
         ("Transaction Health",    ai["transactions"]["observation"][:120], badge_settings(ai["transactions"]["badge"])),
         ("Landing Page (not set) %", ai["landing_page"]["observation"][:120], badge_settings(ai["landing_page"]["badge"])),
         ("Unassigned traffic",    ai["unassigned"]["observation"][:120],   badge_settings(ai["unassigned"]["badge"])),
-        ("GTM Configuration",     "Container details not in dashboard. Audit tags, triggers, Consent Mode binding.", (C_AMBER, C_BLACK)),
-        ("Site-level event tracking", "Site interactions not in dashboard. Map gaps against business goals.", (C_AMBER, C_BLACK)),
+        ("Google Ads",            _ov_entry("Product Links","Google Ads","❌ Not linked")[:120], _ov_badge(_ov_entry("Product Links","Google Ads"))),
+        ("Firebase",              _ov_entry("Product Links","Firebase","❌ Not linked")[:120], _ov_badge(_ov_entry("Product Links","Firebase"))),
+        ("BigQuery",              _ov_entry("Product Links","BigQuery","❌ Not linked")[:120], _ov_badge(_ov_entry("Product Links","BigQuery"))),
+        ("Audiences",             f"Total: {_ov_entry('Audiences','Total Audiences','?')} | Custom: {_ov_entry('Audiences','Custom Audiences','?')}", _ov_badge(_ov_entry("Audiences","Custom Audiences","0"))),
+        ("GTM Configuration",     "Container details not in dashboard. Audit container quality, tags, triggers, Consent Mode.", (C_AMBER, C_BLACK)),
     ]
 
     # ── SLIDE BUILDERS ─────────────────────────────────────────────────────
@@ -1406,7 +1419,58 @@ def export_pptx_bl(request: Request, body: dict = None):
 
         bottom_line(s); page_num(s,pn)
 
-    def make_conclusion(pn):
+    def make_product_links_table():
+        """One slide with full product links table — all products, status + ID."""
+        s = prs.slides.add_slide(blank); set_bg(s, C_BG)
+        add_tb(s,"Product Links",0.50,0.45,9.00,0.75,size=28,bold=True,color=C_BLACK)
+        add_rect(s,0.50,1.25,2.00,0.06,C_BLACK)
+
+        products = [
+            ("Google Ads",       "Google Ads"),
+            ("Firebase",         "Firebase"),
+            ("BigQuery",         "BigQuery"),
+            ("Search Ads 360",   "Search Ads 360"),
+            ("AdSense",          "AdSense"),
+        ]
+        # Table header
+        add_rect(s, 0.50, 1.40, 4.50, 0.38, C_BLACK)
+        add_rect(s, 5.00, 1.40, 7.80, 0.38, C_BLACK)
+        add_tb(s,"  Product",       0.50, 1.43, 4.50, 0.32, size=11, bold=True, color=C_WHITE)
+        add_tb(s,"  Status & Details", 5.00, 1.43, 7.80, 0.32, size=11, bold=True, color=C_WHITE)
+
+        for i,(label, key) in enumerate(products):
+            y = 1.78 + i * 0.52
+            entry = next((e for e in audit_data.get("Product Links",[]) if e.get("Check")==key), None)
+            val   = str(entry.get("Result","❌ Not checked")) if entry else "❌ Not checked"
+            linked = "✅" in val
+            bg = C_BLUE_LIGHT if linked else RGBColor(0xFF,0xEB,0xEB)
+            add_rect(s, 0.50, y, 4.50, 0.50, bg, C_BLACK, 0.25)
+            add_rect(s, 5.00, y, 7.80, 0.50, C_WHITE,    C_BLACK, 0.25)
+            add_tb(s, label,        0.60, y+0.10, 4.30, 0.32, size=11, bold=True, color=C_BLACK)
+            status_color = C_GREEN if linked else (RGBColor(0xCC,0x66,0x00) if "⚠️" in val else C_RED)
+            add_tb(s, val[:100],    5.10, y+0.08, 7.60, 0.35, size=10, color=status_color, wrap=True)
+
+        # Legend
+        add_rect(s, 0.50, 4.50, 0.20, 0.20, C_BLUE_LIGHT, C_BLACK, 0.5)
+        add_tb(s, "= Linked", 0.75, 4.50, 2.0, 0.20, size=9, color=C_BLACK)
+        add_rect(s, 3.00, 4.50, 0.20, 0.20, RGBColor(0xFF,0xEB,0xEB), C_BLACK, 0.5)
+        add_tb(s, "= Not linked", 3.25, 4.50, 2.0, 0.20, size=9, color=C_BLACK)
+
+        bottom_line(s); page_num(s, 0)
+
+    def make_settings_finding(title, section_key, fields_to_show, ai_section_key, note_fn=None, pn=0):
+        """Generic finding slide for Settings sections (Signals, Attribution, etc.)"""
+        entries = [e for e in audit_data.get(section_key,[]) if e.get("Check") != "Raw Response"]
+        # Build evidence text from real data
+        evidence_lines = "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))[:60]}" for e in entries[:8]])
+
+        # Generate AI or use fallback
+        ai_result = _claude_analyse(title, {
+            "section_data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in entries],
+        }, prop_ctx)
+
+        note_text = note_fn(entries) if note_fn else ""
+        make_finding(title, ai_result, note_text=note_text, pn=pn)
         s = prs.slides.add_slide(blank); set_bg(s, C_BG)
         add_tb(s,"Overall Conclusion",0.50,0.40,9.00,0.70,size=28,bold=True,italic=True)
         add_rect(s,0.50,1.25,2.00,0.06,C_BLACK)
@@ -1462,6 +1526,63 @@ def export_pptx_bl(request: Request, body: dict = None):
     make_finding("PII Check",          ai["pii"],
                  note_text="PII scan: UTMs and click IDs excluded." if not pii_issues else f"{len(pii_issues)} PII issue(s) found",
                  pn=9)
+
+    # ── New: Attribution, Reporting Identity, User Provided Data ──────────
+    make_divider("Property Configuration", "Attribution · Reporting Identity · User Data")
+
+    # Attribution Settings
+    attr_entries = [e for e in audit_data.get("Attribution Settings",[]) if e.get("Check")!="Raw Response"]
+    attr_ai = _claude_analyse("Attribution Settings", {
+        "data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in attr_entries]
+    }, prop_ctx)
+    make_finding("Attribution Settings", attr_ai,
+                 note_text=f"Model: {gv('Attribution Settings','Reporting Attribution Model','Data-Driven')}",
+                 pn=10)
+
+    # Reporting Identity
+    ri_entries = [e for e in audit_data.get("Reporting Identity",[]) if e.get("Check")!="Raw Response"]
+    ri_ai = _claude_analyse("Reporting Identity Settings", {
+        "data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in ri_entries]
+    }, prop_ctx)
+    make_finding("Reporting Identity", ri_ai,
+                 note_text=gv("Reporting Identity","Reporting Identity","Not fetched"),
+                 pn=11)
+
+    # User Provided Data
+    upd_entries = [e for e in audit_data.get("User Provided Data",[]) if e.get("Check")!="Raw Response"]
+    upd_ai = _claude_analyse("User Provided Data Collection", {
+        "data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in upd_entries]
+    }, prop_ctx)
+    make_finding("User Provided Data Collection", upd_ai,
+                 note_text=gv("User Provided Data","Collection State","Not fetched"),
+                 pn=12)
+
+    # Google Signals (dedicated slide with real data)
+    gs_entries = [e for e in audit_data.get("Google Signals",[]) if e.get("Check")!="Raw Response"]
+    gs_ai = _claude_analyse("Google Signals", {
+        "state":   gv("Google Signals","State","Not fetched"),
+        "consent": gv("Google Signals","Consent","Not fetched"),
+        "data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in gs_entries]
+    }, prop_ctx)
+    make_finding("Google Signals", gs_ai,
+                 note_text=f"State: {gv('Google Signals','State','Not fetched')} | Consent: {gv('Google Signals','Consent','Not fetched')}",
+                 pn=13)
+
+    # ── Product Links — one table slide ───────────────────────────────────
+    make_divider("Product Links", "Google Ads · Firebase · BigQuery · Search Ads 360 · AdSense")
+    make_product_links_table()
+
+    # ── Audiences ─────────────────────────────────────────────────────────
+    make_divider("Audiences")
+    aud_ai = _claude_analyse("Audiences", {
+        "total":   gv("Audiences","Total Audiences","0"),
+        "default": gv("Audiences","Default Audiences","0"),
+        "custom":  gv("Audiences","Custom Audiences","0"),
+        "list": [e.get("Check","").replace("Audience: ","") for e in audit_data.get("Audiences",[]) if e.get("Check","").startswith("Audience:")],
+    }, prop_ctx)
+    make_finding("Audiences", aud_ai,
+                 note_text=f"Total: {gv('Audiences','Total Audiences','?')} | Custom: {gv('Audiences','Custom Audiences','?')}",
+                 pn=14)
 
     make_divider("GA4 Data Quality")
     make_finding("Custom Definitions", ai["custom_dims"],

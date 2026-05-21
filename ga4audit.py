@@ -215,6 +215,173 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     except Exception as e:
         log("Product Links", "Firebase", f"⚠️ Could not check: {e}")
 
+    # ── BigQuery Links ─────────────────────────────────────────────────────
+    try:
+        bq_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/bigQueryLinks",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        bq_data = bq_resp.json()
+        bq_links = bq_data.get("bigqueryLinks", [])
+        if bq_links:
+            for link in bq_links:
+                proj = link.get("project", "unknown")
+                log("Product Links", "BigQuery",
+                    f"✅ Linked — Project: {proj}")
+        else:
+            log("Product Links", "BigQuery", "❌ Not linked")
+    except Exception as e:
+        log("Product Links", "BigQuery", f"⚠️ Could not check: {e}")
+
+    # ── Search Ads 360 Links ───────────────────────────────────────────────
+    try:
+        sa360_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/searchAds360Links",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        sa360_data = sa360_resp.json()
+        sa360_links = sa360_data.get("searchAds360Links", [])
+        if sa360_links:
+            for link in sa360_links:
+                cid = link.get("advertiserId", link.get("name","unknown"))
+                log("Product Links", "Search Ads 360",
+                    f"✅ Linked — Advertiser ID: {cid}")
+        else:
+            log("Product Links", "Search Ads 360", "❌ Not linked")
+    except Exception as e:
+        log("Product Links", "Search Ads 360", f"⚠️ Could not check: {e}")
+
+    # ── AdSense Links ──────────────────────────────────────────────────────
+    try:
+        adsense_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/adSenseLinks",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        adsense_data = adsense_resp.json()
+        adsense_links = adsense_data.get("adsenseLinks", [])
+        if adsense_links:
+            for link in adsense_links:
+                aid = link.get("adClientCode", link.get("name","unknown"))
+                log("Product Links", "AdSense",
+                    f"✅ Linked — Ad Client: {aid}")
+        else:
+            log("Product Links", "AdSense", "❌ Not linked")
+    except Exception as e:
+        log("Product Links", "AdSense", f"⚠️ Could not check: {e}")
+
+    # ── Attribution Settings (v1alpha REST) ───────────────────────────────
+    try:
+        attr_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/attributionSettings",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        attr = attr_resp.json()
+        model = attr.get("reportingAttributionModel","").replace("_"," ").title()
+        acq_window = attr.get("adsWebConversionDataExportScope",
+                     attr.get("acquistionConversionEventLookbackWindow","")).replace("_"," ").title()
+        other_window = attr.get("otherConversionEventLookbackWindow","").replace("_"," ").title()
+        log("Attribution Settings", "Reporting Attribution Model",
+            model or "Data-Driven (default)")
+        log("Attribution Settings", "Acquisition Lookback Window",
+            acq_window or "30 days (default)")
+        log("Attribution Settings", "Other Conversions Lookback Window",
+            other_window or "90 days (default)")
+        log("Attribution Settings", "Raw Response", str(attr)[:300])
+    except Exception as e:
+        log("Attribution Settings", "Status", f"⚠️ Could not fetch: {e}")
+        log("Attribution Settings", "Reporting Attribution Model", "Data-Driven (default)")
+        log("Attribution Settings", "Acquisition Lookback Window", "30 days (default)")
+        log("Attribution Settings", "Other Conversions Lookback Window", "90 days (default)")
+
+    # ── Google Signals Settings (v1alpha REST) ─────────────────────────────
+    try:
+        gs_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/googleSignalsSettings",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        gs = gs_resp.json()
+        state = gs.get("state","GOOGLE_SIGNALS_STATE_UNSPECIFIED")
+        consent = gs.get("consent","GOOGLE_SIGNALS_CONSENT_UNSPECIFIED")
+        state_label = (
+            "✅ Enabled" if "ENABLED" in state else
+            "❌ Disabled" if "DISABLED" in state else
+            "⚠️ Not configured"
+        )
+        consent_label = (
+            "✅ Consented" if "CONSENTED" in consent else
+            "⚠️ Not consented" if "NOT_CONSENTED" in consent else
+            "⚠️ Unspecified"
+        )
+        log("Google Signals", "State",   state_label)
+        log("Google Signals", "Consent", consent_label)
+        log("Google Signals", "Raw Response", str(gs)[:200])
+    except Exception as e:
+        log("Google Signals", "Status", f"⚠️ Could not fetch: {e}")
+        log("Google Signals", "State",  "⚠️ Unknown — verify in GA4 admin")
+
+    # ── Reporting Identity Settings (v1alpha REST) ─────────────────────────
+    try:
+        ri_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/reportingIdentitySettings",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        ri = ri_resp.json()
+        identity = ri.get("reportingIdentity","REPORTING_IDENTITY_UNSPECIFIED")
+        identity_label = {
+            "BLENDED":   "✅ Blended (recommended)",
+            "OBSERVED":  "📊 Observed",
+            "DEVICE_BASED": "📱 Device-based",
+            "REPORTING_IDENTITY_UNSPECIFIED": "⚠️ Not configured",
+        }.get(identity, identity.replace("_"," ").title())
+        log("Reporting Identity", "Reporting Identity", identity_label)
+        log("Reporting Identity", "Raw Response", str(ri)[:200])
+    except Exception as e:
+        log("Reporting Identity", "Status", f"⚠️ Could not fetch: {e}")
+        log("Reporting Identity", "Reporting Identity", "⚠️ Unknown — verify in GA4 admin")
+
+    # ── User Provided Data Settings (v1alpha REST) ─────────────────────────
+    try:
+        upd_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/userProvidedDataSettings",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        upd = upd_resp.json()
+        state = upd.get("state","USER_PROVIDED_DATA_COLLECTION_STATE_UNSPECIFIED")
+        state_label = (
+            "✅ Active" if "ACTIVE" in state else
+            "❌ Disabled" if "DISABLED" in state else
+            "⚠️ Not configured"
+        )
+        types = upd.get("collectionTypes", [])
+        types_label = ", ".join([t.replace("_"," ").title() for t in types]) if types else "None configured"
+        log("User Provided Data", "Collection State",  state_label)
+        log("User Provided Data", "Collection Types",  types_label)
+        log("User Provided Data", "Raw Response", str(upd)[:200])
+    except Exception as e:
+        log("User Provided Data", "Status", f"⚠️ Could not fetch: {e}")
+        log("User Provided Data", "Collection State",  "⚠️ Unknown — verify in GA4 admin")
+
+    # ── Audiences ─────────────────────────────────────────────────────────
+    try:
+        aud_resp = requests.get(
+            f"https://analyticsadmin.googleapis.com/v1alpha/{property_id}/audiences?pageSize=50",
+            headers={"Authorization": f"Bearer {creds.token}"}
+        )
+        aud_data = aud_resp.json()
+        audiences = aud_data.get("audiences", [])
+        log("Audiences", "Total Audiences", str(len(audiences)))
+        default_aud = [a for a in audiences if a.get("displayName","").lower() in
+                       ("all users","purchasers","all visitors")]
+        custom_aud  = [a for a in audiences if a.get("displayName","").lower() not in
+                       ("all users","purchasers","all visitors")]
+        log("Audiences", "Default Audiences", str(len(default_aud)))
+        log("Audiences", "Custom Audiences",  str(len(custom_aud)))
+        for aud in audiences[:10]:
+            log("Audiences", f"Audience: {aud.get('displayName','Unnamed')}",
+                f"Membership duration: {aud.get('membershipDurationDays','?')} days")
+    except Exception as e:
+        log("Audiences", "Status", f"⚠️ Could not fetch: {e}")
+
     # ── Limits (dynamic based on service level) ────────────────────────────
     # Detect 360 vs Standard from the property object
     is_360 = (
@@ -482,6 +649,11 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
         "Streams Configuration":               [r for r in audit_rows if r["Category"] == "Streams"],
         "GA4 Property Limits":                 [r for r in audit_rows if r["Category"] == "Limits"],
         "Product Links":                       [r for r in audit_rows if r["Category"] == "Product Links"],
+        "Attribution Settings":                [r for r in audit_rows if r["Category"] == "Attribution Settings"],
+        "Google Signals":                      [r for r in audit_rows if r["Category"] == "Google Signals"],
+        "Reporting Identity":                  [r for r in audit_rows if r["Category"] == "Reporting Identity"],
+        "User Provided Data":                  [r for r in audit_rows if r["Category"] == "User Provided Data"],
+        "Audiences":                           [r for r in audit_rows if r["Category"] == "Audiences"],
         "Custom Dimensions - Event Scoped":    [r for r in audit_rows if r["Category"] == "Custom Dimensions - Event Scoped"],
         "Custom Dimensions - User Scoped":     [r for r in audit_rows if r["Category"] == "Custom Dimensions - User Scoped"],
         "Custom Dimensions - Item Scoped":     [r for r in audit_rows if r["Category"] == "Custom Dimensions - Item Scoped"],
