@@ -29,18 +29,45 @@ SCOPES = [
 ]
 
 # ── CORS ───────────────────────────────────────────────────────────────────
+# Must be registered BEFORE any route handlers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         FRONTEND_URL,
+        "https://ga4-audit-frontend.vercel.app",
         "http://localhost:5173",
         "http://localhost:5174",
         "http://localhost:5175",
     ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
     allow_headers=["*"],
+    expose_headers=["Content-Disposition", "Content-Type", "Content-Length"],
+    max_age=3600,
 )
+
+# ── Explicit OPTIONS handler for all routes (handles Render cold-start) ────
+@app.options("/{rest_of_path:path}")
+async def preflight_handler(request: Request, rest_of_path: str):
+    return JSONResponse(
+        content={},
+        headers={
+            "Access-Control-Allow-Origin":  request.headers.get("origin", "*"),
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS, PATCH",
+            "Access-Control-Allow-Headers": "*",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "3600",
+        },
+    )
+
+# ── Health / keep-alive endpoints ─────────────────────────────────────────
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "GA4 Audit Backend"}
+
+@app.get("/health")
+def health():
+    return {"status": "healthy"}
 
 # ── Helper: decode token from request header ───────────────────────────────
 def get_user_credentials(request: Request) -> Credentials:
