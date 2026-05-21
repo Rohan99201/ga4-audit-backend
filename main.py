@@ -1488,16 +1488,13 @@ def export_pptx_bl(request: Request, body: dict = None):
     def make_settings_finding(title, section_key, fields_to_show, ai_section_key, note_fn=None, pn=0):
         """Generic finding slide for Settings sections (Signals, Attribution, etc.)"""
         entries = [e for e in audit_data.get(section_key,[]) if e.get("Check") != "Raw Response"]
-        # Build evidence text from real data
-        evidence_lines = "\n".join([f"{e.get('Check','')}: {str(e.get('Result',''))[:60]}" for e in entries[:8]])
-
-        # Generate AI or use fallback
         ai_result = _claude_analyse(title, {
             "section_data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in entries],
         }, prop_ctx)
-
         note_text = note_fn(entries) if note_fn else ""
         make_finding(title, ai_result, note_text=note_text, pn=pn)
+
+    def make_conclusion(pn):
         s = prs.slides.add_slide(blank); set_bg(s, C_BG)
         add_tb(s,"Overall Conclusion",0.50,0.40,9.00,0.70,size=28,bold=True,italic=True)
         add_rect(s,0.50,1.25,2.00,0.06,C_BLACK)
