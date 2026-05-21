@@ -1075,6 +1075,18 @@ Badge rules:
                 "impact": "Unassigned traffic creates attribution gaps, making it impossible to accurately measure which channels drive value and affecting budget allocation.",
                 "badge": "Pass" if float(str(section_data.get("unassigned_percent","0%")).replace("%","") or 0) <= 10 else "Need to be discussed",
             },
+            "Attribution Settings": {
+                "observation": f"Attribution model: {section_data.get('data',[{}])[0].get('result','Data-Driven (default)')}. The recommended setup is the Data-Driven model with 30-day acquisition and 90-day other conversion lookback windows.",
+                "recommendation": "Keep the Data-Driven attribution model selected. Avoid changing lookback windows unless there is a specific business reason — the defaults are optimised for most GA4 properties.",
+                "impact": "Attribution settings determine how credit is distributed across touchpoints. Non-default settings can skew channel performance reports and misallocate media budget.",
+                "badge": "Pass"
+            },
+            "User Provided Data Collection": {
+                "observation": f"User Provided Data collection state: {section_data.get('data',[{}])[0].get('result','Not configured')}. This feature allows GA4 to match first-party signals for improved measurement.",
+                "recommendation": "Enable User Provided Data collection to improve conversion modelling and audience matching. Requires updating your privacy policy and implementing the necessary consent mechanisms.",
+                "impact": "Without User Provided Data, GA4 cannot leverage first-party signals for enhanced conversions or audience matching, reducing measurement accuracy in cookieless environments.",
+                "badge": "Fail"
+            },
             "Product Linking (Google Ads & Firebase)": {
                 "observation": f"Google Ads: {section_data.get('google_ads','Not checked')}. Firebase: {section_data.get('firebase','Not checked')}.",
                 "recommendation": "Link Google Ads for Smart Bidding signals and audience sharing. Link Firebase for app + web cross-platform reporting. Also consider BigQuery, Search Console, and DV360.",
@@ -1304,6 +1316,37 @@ def export_pptx_bl(request: Request, body: dict = None):
         entry = next((e for e in audit_data.get(section_key,[]) if e.get("Check")==check_key), None)
         return str(entry.get("Result", fallback)) if entry else fallback
 
+    def _attr_badge():
+        """Attribution: Pass if data-driven model with default windows (recommended)."""
+        model = _ov_entry("Attribution Settings", "Reporting Attribution Model", "")
+        acq   = _ov_entry("Attribution Settings", "Acquisition Lookback Window",  "")
+        other = _ov_entry("Attribution Settings", "Other Conversions Lookback Window", "")
+        # Recommended = Data-Driven model + 30-day acq window + 90-day other window
+        is_recommended = (
+            any(k in model.lower() for k in ["data", "driven", "data driven", "data-driven"]) or
+            model in ("", "Not fetched", "Not checked")  # default = data-driven
+        )
+        if is_recommended:
+            return (C_GREEN, C_WHITE)  # Pass — on recommended settings
+        return (C_AMBER, C_BLACK)  # TBD — non-default model selected
+
+    def _upd_badge():
+        """User Provided Data: Fail if not configured/active, Pass if active."""
+        state = _ov_entry("User Provided Data", "Collection State", "")
+        if "✅" in state and "Active" in state:
+            return (C_GREEN, C_WHITE)   # Pass
+        if "⚠️" in state or "Not configured" in state or state in ("", "Not checked", "Not fetched"):
+            return (C_RED, C_WHITE)     # Fail — not configured
+        if "❌" in state or "Disabled" in state:
+            return (C_RED, C_WHITE)     # Fail
+        return (C_AMBER, C_BLACK)       # TBD
+
+    def _attr_comment():
+        model = _ov_entry("Attribution Settings", "Reporting Attribution Model", "Data-Driven (default)")
+        acq   = _ov_entry("Attribution Settings", "Acquisition Lookback Window",  "30 days (default)")
+        other = _ov_entry("Attribution Settings", "Other Conversions Lookback Window", "90 days (default)")
+        return f"Model: {model} | Acq: {acq} | Other: {other}"
+
     # Overview rows now use REAL data from the new APIs
     overview_rows_1 = [
         ("Consent Management",    ai["consent"]["observation"][:120],     badge_settings(ai["consent"]["badge"])),
@@ -1313,8 +1356,8 @@ def export_pptx_bl(request: Request, body: dict = None):
         ("Cross-domain measurement", "Not visible in dashboard. Confirm if cross-domain journeys exist and configure if required.", (C_AMBER, C_BLACK)),
         ("Session timeout",       "Not visible in dashboard. Confirm defaults (30 min / 10 sec) are in place.", (C_AMBER, C_BLACK)),
         ("Reporting Identity",    _ov_entry("Reporting Identity","Reporting Identity","⚠️ Not fetched"), _ov_badge(_ov_entry("Reporting Identity","Reporting Identity"))),
-        ("Attribution Settings",  _ov_entry("Attribution Settings","Reporting Attribution Model","⚠️ Not fetched"), _ov_badge(_ov_entry("Attribution Settings","Reporting Attribution Model"))),
-        ("User Provided Data",    _ov_entry("User Provided Data","Collection State","⚠️ Not fetched"), _ov_badge(_ov_entry("User Provided Data","Collection State"))),
+        ("Attribution Settings",  _attr_comment(), _attr_badge()),
+        ("User Provided Data",    _ov_entry("User Provided Data","Collection State","❌ Not configured"), _upd_badge()),
         ("PII",                   ai["pii"]["observation"][:120],          badge_settings(ai["pii"]["badge"])),
     ]
     overview_rows_2 = [
@@ -1559,8 +1602,12 @@ def export_pptx_bl(request: Request, body: dict = None):
     attr_ai = _claude_analyse("Attribution Settings", {
         "data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in attr_entries]
     }, prop_ctx)
+    # Override badge with deterministic logic — recommended = Pass
+    attr_model = gv("Attribution Settings","Reporting Attribution Model","")
+    attr_is_recommended = any(k in attr_model.lower() for k in ["data","driven"]) or attr_model in ("","Not fetched","Not checked")
+    attr_ai["badge"] = "Pass" if attr_is_recommended else "Need to be discussed"
     make_finding("Attribution Settings", attr_ai,
-                 note_text=f"Model: {gv('Attribution Settings','Reporting Attribution Model','Data-Driven')}",
+                 note_text=f"Model: {gv('Attribution Settings','Reporting Attribution Model','Data-Driven')} | Acq: {gv('Attribution Settings','Acquisition Lookback Window','30 days')} | Other: {gv('Attribution Settings','Other Conversions Lookback Window','90 days')}",
                  pn=10)
 
     # Reporting Identity
@@ -1577,8 +1624,14 @@ def export_pptx_bl(request: Request, body: dict = None):
     upd_ai = _claude_analyse("User Provided Data Collection", {
         "data": [{"check": e.get("Check"), "result": str(e.get("Result",""))[:100]} for e in upd_entries]
     }, prop_ctx)
+    # Override badge — not configured = Fail
+    upd_state = gv("User Provided Data","Collection State","")
+    if "✅" in upd_state and "Active" in upd_state:
+        upd_ai["badge"] = "Pass"
+    elif upd_state in ("", "Not fetched", "Not checked") or "Not configured" in upd_state or "⚠️" in upd_state:
+        upd_ai["badge"] = "Fail"
     make_finding("User Provided Data Collection", upd_ai,
-                 note_text=gv("User Provided Data","Collection State","Not fetched"),
+                 note_text=gv("User Provided Data","Collection State","Not configured"),
                  pn=12)
 
     # Google Signals (dedicated slide with real data)
