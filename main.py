@@ -1315,7 +1315,7 @@ def export_pptx_bl(request: Request, body: dict = None):
             ("Property name",      gv("Property Details","Display Name")),
             ("Property ID",        gv("Property Details","Property ID")),
             ("Reporting time zone",gv("Property Details","Time Zone")),
-            ("Industry Category",  "[To be confirmed]"),
+            ("Industry Category",  gv("Property Details", "Industry Category")),
             ("Currency displayed as", gv("Property Details","Currency")),
         ]
         for i,(k,v) in enumerate(prop_rows):
@@ -1327,10 +1327,10 @@ def export_pptx_bl(request: Request, body: dict = None):
         add_badge(s,"Stream details",0.50,4.00,2.00,0.35,C_BLACK,C_WHITE,12)
         streams=audit_data.get("Streams Configuration",[])
         stream_rows=[
-            ("Stream name",    streams[0].get("Result","[To be confirmed]") if streams else "[To be confirmed]"),
-            ("Stream ID",      gv("Property Details","Stream ID","[To be confirmed]")),
-            ("Stream URL",     "[To be confirmed]"),
-            ("Measurement ID", "[To be confirmed]"),
+            ("Stream name",    gv("Streams Configuration", "Stream Name")),
+            ("Stream ID",      gv("Streams Configuration", "Stream ID")),
+            ("Stream URL",     gv("Streams Configuration", "Stream URL")),
+            ("Measurement ID", gv("Streams Configuration", "Measurement ID")),
         ]
         for i,(k,v) in enumerate(stream_rows):
             y=4.45+i*0.38
