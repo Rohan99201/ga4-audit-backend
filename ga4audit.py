@@ -97,21 +97,16 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     log("Settings", "Display Name",  prop.display_name)
     log("Settings", "Property ID",   property_numeric_id)
 
-    # Industry Category — convert enum int/name to human-readable label
+    # Industry Category — SDK returns an IndustryCategory enum with a .name attribute
     try:
-        from google.analytics.admin_v1beta.types import IndustryCategory
-        raw_ic = prop.industry_category
-        # raw_ic may be an int or the enum itself
-        if hasattr(raw_ic, 'name'):
-            ic_name = raw_ic.name
+        raw_ic = prop.industry_category          # e.g. IndustryCategory.SHOPPING
+        ic_name = raw_ic.name                    # e.g. "SHOPPING"
+        if ic_name in ("", "INDUSTRY_CATEGORY_UNSPECIFIED"):
+            ic_label = "[Not set]"
         else:
-            try:
-                ic_name = IndustryCategory(int(raw_ic)).name
-            except Exception:
-                ic_name = str(raw_ic)
-        ic_label = ic_name.replace("_", " ").title() if ic_name not in ("0","INDUSTRY_CATEGORY_UNSPECIFIED","") else "[Not set]"
+            ic_label = ic_name.replace("_", " ").title()  # e.g. "Shopping"
     except Exception:
-        ic_label = str(prop.industry_category) or "[Not set]"
+        ic_label = "[Not set]"
     log("Settings", "Industry Category", ic_label)
 
     log("Settings", "Time Zone", prop.time_zone)
@@ -148,33 +143,52 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     except Exception as e:
         log("Settings", "Retention Period", f"Not available ({e})")
 
-    # ── Streams — full details: ID, URL, Measurement ID ────────────────────
-    for stream in admin_client.list_data_streams(parent=property_id):
-        # Parse numeric stream ID from resource name: "properties/123/dataStreams/456" → "456"
-        stream_numeric_id = stream.name.split("/")[-1] if stream.name else "[unknown]"
+    # ── Streams — full details from list_data_streams API ─────────────────
+    try:
+        streams_list = list(admin_client.list_data_streams(parent=property_id))
+    except Exception as e:
+        streams_list = []
+        log("Streams", "Stream Error", f"Could not fetch streams: {e}")
 
-        if stream.web_stream_data:
-            stream_type     = "Web"
-            stream_url      = stream.web_stream_data.default_uri or "[not set]"
-            measurement_id  = stream.web_stream_data.measurement_id or "[not set]"
+    for stream in streams_list:
+        # Resource name: "properties/123/dataStreams/456" → numeric ID is last segment
+        try:
+            stream_numeric_id = stream.name.split("/")[-1]
+        except Exception:
+            stream_numeric_id = "[unknown]"
+
+        # Stream display name
+        stream_display = stream.display_name or "[Unnamed]"
+
+        # Type-specific fields
+        if stream.web_stream_data and stream.web_stream_data.measurement_id:
+            stream_type    = "Web"
+            stream_url     = stream.web_stream_data.default_uri or "[not set]"
+            measurement_id = stream.web_stream_data.measurement_id  # e.g. "G-XXXXXXXX"
         elif stream.android_app_stream_data:
-            stream_type     = "Android App"
-            stream_url      = stream.android_app_stream_data.package_name or "[not set]"
-            measurement_id  = "[N/A — App stream]"
+            stream_type    = "Android App"
+            stream_url     = getattr(stream.android_app_stream_data, "package_name", "[not set]") or "[not set]"
+            measurement_id = "[N/A — App stream]"
         elif stream.ios_app_stream_data:
-            stream_type     = "iOS App"
-            stream_url      = stream.ios_app_stream_data.bundle_id or "[not set]"
-            measurement_id  = "[N/A — App stream]"
+            stream_type    = "iOS App"
+            stream_url     = getattr(stream.ios_app_stream_data, "bundle_id", "[not set]") or "[not set]"
+            measurement_id = "[N/A — App stream]"
         else:
-            stream_type     = "Unknown"
-            stream_url      = "[not set]"
-            measurement_id  = "[not set]"
+            # Fallback: try to read web fields directly even if check failed
+            try:
+                measurement_id = stream.web_stream_data.measurement_id or "[not set]"
+                stream_url     = stream.web_stream_data.default_uri or "[not set]"
+                stream_type    = "Web"
+            except Exception:
+                stream_type    = "Unknown"
+                stream_url     = "[not set]"
+                measurement_id = "[not set]"
 
-        log("Streams", "Stream Name",       stream.display_name or "[Unnamed]")
-        log("Streams", "Stream Type",       stream_type)
-        log("Streams", "Stream ID",         stream_numeric_id)
-        log("Streams", "Stream URL",        stream_url)
-        log("Streams", "Measurement ID",    measurement_id)
+        log("Streams", "Stream Name",    stream_display)
+        log("Streams", "Stream Type",    stream_type)
+        log("Streams", "Stream ID",      stream_numeric_id)
+        log("Streams", "Stream URL",     stream_url)
+        log("Streams", "Measurement ID", measurement_id)
 
     # ── Google Ads Links ───────────────────────────────────────────────────
     try:

@@ -1491,3 +1491,34 @@ def export_pptx_bl(request: Request, body: dict = None):
     return StreamingResponse(buf,
         media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         headers={"Content-Disposition": f'attachment; filename="{fn}"'})
+
+
+@app.get("/debug-streams")
+def debug_streams(
+    request: Request,
+    property_id: str = Query(...),
+):
+    """Debug endpoint — returns raw stream data exactly as the GA4 SDK sees it."""
+    from google.analytics.admin import AnalyticsAdminServiceClient
+    creds = get_user_credentials(request)
+    try:
+        admin_client = AnalyticsAdminServiceClient(credentials=creds)
+        result = []
+        for stream in admin_client.list_data_streams(parent=f"properties/{property_id}"):
+            entry = {
+                "raw_name":         stream.name,
+                "stream_id":        stream.name.split("/")[-1] if stream.name else None,
+                "display_name":     stream.display_name,
+                "type":             str(stream.type_),
+                "has_web_data":     bool(stream.web_stream_data),
+                "has_android_data": bool(stream.android_app_stream_data),
+                "has_ios_data":     bool(stream.ios_app_stream_data),
+            }
+            if stream.web_stream_data:
+                entry["measurement_id"] = stream.web_stream_data.measurement_id
+                entry["default_uri"]    = stream.web_stream_data.default_uri
+                entry["firebase_app_id"]= stream.web_stream_data.firebase_app_id
+            result.append(entry)
+        return {"success": True, "streams": result}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
