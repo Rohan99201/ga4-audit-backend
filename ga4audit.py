@@ -94,9 +94,28 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
 
     # ── Property Settings ──────────────────────────────────────────────────
     prop = admin_client.get_property(name=property_id)
-    log("Settings", "Display Name", prop.display_name)
+    log("Settings", "Display Name",  prop.display_name)
+    log("Settings", "Property ID",   property_numeric_id)
+
+    # Industry Category — convert enum int/name to human-readable label
+    try:
+        from google.analytics.admin_v1beta.types import IndustryCategory
+        raw_ic = prop.industry_category
+        # raw_ic may be an int or the enum itself
+        if hasattr(raw_ic, 'name'):
+            ic_name = raw_ic.name
+        else:
+            try:
+                ic_name = IndustryCategory(int(raw_ic)).name
+            except Exception:
+                ic_name = str(raw_ic)
+        ic_label = ic_name.replace("_", " ").title() if ic_name not in ("0","INDUSTRY_CATEGORY_UNSPECIFIED","") else "[Not set]"
+    except Exception:
+        ic_label = str(prop.industry_category) or "[Not set]"
+    log("Settings", "Industry Category", ic_label)
+
     log("Settings", "Time Zone", prop.time_zone)
-    log("Settings", "Currency", prop.currency_code)
+    log("Settings", "Currency",  prop.currency_code)
 
     acknowledgement_string = (
         "I acknowledge that I have the necessary privacy disclosures and rights from my end users "
@@ -129,14 +148,58 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
     except Exception as e:
         log("Settings", "Retention Period", f"Not available ({e})")
 
-    # ── Streams ────────────────────────────────────────────────────────────
+    # ── Streams — full details: ID, URL, Measurement ID ────────────────────
     for stream in admin_client.list_data_streams(parent=property_id):
-        stream_type = (
-            "Web" if stream.web_stream_data else
-            "Android" if stream.android_app_stream_data else
-            "iOS" if stream.ios_app_stream_data else "Unknown"
-        )
-        log("Streams", f"{stream.display_name or 'Unnamed'} ({stream_type})", stream.name)
+        # Parse numeric stream ID from resource name: "properties/123/dataStreams/456" → "456"
+        stream_numeric_id = stream.name.split("/")[-1] if stream.name else "[unknown]"
+
+        if stream.web_stream_data:
+            stream_type     = "Web"
+            stream_url      = stream.web_stream_data.default_uri or "[not set]"
+            measurement_id  = stream.web_stream_data.measurement_id or "[not set]"
+        elif stream.android_app_stream_data:
+            stream_type     = "Android App"
+            stream_url      = stream.android_app_stream_data.package_name or "[not set]"
+            measurement_id  = "[N/A — App stream]"
+        elif stream.ios_app_stream_data:
+            stream_type     = "iOS App"
+            stream_url      = stream.ios_app_stream_data.bundle_id or "[not set]"
+            measurement_id  = "[N/A — App stream]"
+        else:
+            stream_type     = "Unknown"
+            stream_url      = "[not set]"
+            measurement_id  = "[not set]"
+
+        log("Streams", "Stream Name",       stream.display_name or "[Unnamed]")
+        log("Streams", "Stream Type",       stream_type)
+        log("Streams", "Stream ID",         stream_numeric_id)
+        log("Streams", "Stream URL",        stream_url)
+        log("Streams", "Measurement ID",    measurement_id)
+
+    # ── Google Ads Links ───────────────────────────────────────────────────
+    try:
+        google_ads_links = list(admin_client.list_google_ads_links(parent=property_id))
+        if google_ads_links:
+            for link in google_ads_links:
+                ads_personalisation = "✅ Enabled" if link.ads_personalization_enabled else "❌ Disabled"
+                log("Product Links", "Google Ads",
+                    f"✅ Linked — Customer ID: {link.customer_id} | Ads Personalisation: {ads_personalisation}")
+        else:
+            log("Product Links", "Google Ads", "❌ Not linked")
+    except Exception as e:
+        log("Product Links", "Google Ads", f"⚠️ Could not check: {e}")
+
+    # ── Firebase Links ─────────────────────────────────────────────────────
+    try:
+        firebase_links = list(admin_client.list_firebase_links(parent=property_id))
+        if firebase_links:
+            for link in firebase_links:
+                log("Product Links", "Firebase",
+                    f"✅ Linked — Project: {link.project}")
+        else:
+            log("Product Links", "Firebase", "❌ Not linked")
+    except Exception as e:
+        log("Product Links", "Firebase", f"⚠️ Could not check: {e}")
 
     # ── Limits (dynamic based on service level) ────────────────────────────
     # Detect 360 vs Standard from the property object
@@ -404,6 +467,7 @@ def run_ga4_audit_with_creds(creds, property_numeric_id, start_date="30daysAgo",
         "Property Details":                    [r for r in audit_rows if r["Category"] == "Settings"],
         "Streams Configuration":               [r for r in audit_rows if r["Category"] == "Streams"],
         "GA4 Property Limits":                 [r for r in audit_rows if r["Category"] == "Limits"],
+        "Product Links":                       [r for r in audit_rows if r["Category"] == "Product Links"],
         "Custom Dimensions - Event Scoped":    [r for r in audit_rows if r["Category"] == "Custom Dimensions - Event Scoped"],
         "Custom Dimensions - User Scoped":     [r for r in audit_rows if r["Category"] == "Custom Dimensions - User Scoped"],
         "Custom Dimensions - Item Scoped":     [r for r in audit_rows if r["Category"] == "Custom Dimensions - Item Scoped"],
